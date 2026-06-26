@@ -1,3 +1,6 @@
+import Link from "next/link";
+import ListingRatingControls from "./ListingRatingControls";
+
 type Listing = {
   id: string;
   canonical_url: string;
@@ -84,19 +87,26 @@ export default async function Home() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="max-w-5xl mx-auto px-4 py-10">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-white mb-1">
-            Today&apos;s best Brooklyn 2BRs
-          </h1>
-          <p className="text-zinc-400 text-sm">
-            {listings.length} active listing{listings.length !== 1 ? "s" : ""}
-          </p>
+        <div className="flex items-baseline justify-between mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-white mb-1">
+              Today&apos;s best Brooklyn 2BRs
+            </h1>
+            <p className="text-zinc-400 text-sm">
+              {listings.length} active listing{listings.length !== 1 ? "s" : ""}
+            </p>
+          </div>
+          <Link href="/new" className="text-sm text-zinc-400 hover:text-zinc-200">
+            Add listing
+          </Link>
         </div>
 
         {listings.length === 0 ? (
           <div className="text-center py-20 text-zinc-500">
             <p className="text-lg">No listings yet.</p>
-            <p className="text-sm mt-2">Add one via the API.</p>
+            <p className="text-sm mt-2">
+              <Link href="/new" className="underline">Add one.</Link>
+            </p>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -202,6 +212,8 @@ export default async function Home() {
                     </span>
                   </span>
                 </div>
+
+                <ListingRatingControls listingId={l.id} />
               </div>
             ))}
           </div>
