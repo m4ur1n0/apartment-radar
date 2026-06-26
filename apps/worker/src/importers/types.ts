@@ -9,6 +9,8 @@ export type ImportSource =
 
 export type Confidence = "low" | "medium" | "high";
 
+export type FetchMode = "direct" | "scraperapi";
+
 export interface ExtractedFields {
   canonical_url?: string;
   source?: string;
@@ -34,6 +36,12 @@ export interface ImportPreviewResult {
   url: string;
   source: ImportSource;
   confidence: Confidence;
+  fetchMode: FetchMode;
   fields: ExtractedFields;
   warnings: string[];
+  debug?: {
+    httpStatus?: number;
+    htmlCharsParsed?: number;
+    extractorsUsed: string[];
+  };
 }

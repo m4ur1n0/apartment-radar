@@ -1,4 +1,4 @@
-import type { Confidence, ExtractedFields, ImportPreviewResult, ImportSource } from "./types";
+import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, ImportSource } from "./types";
 
 const MAX_BYTES = 500_000;
 const UA =
@@ -55,7 +55,15 @@ function parseJsonLd(html: string): Record<string, unknown>[] {
   while ((m = re.exec(html)) !== null) {
     try {
       const v = JSON.parse(m[1].trim()) as unknown;
-      if (v && typeof v === "object" && !Array.isArray(v)) out.push(v as Record<string, unknown>);
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item && typeof item === "object" && !Array.isArray(item)) {
+            out.push(item as Record<string, unknown>);
+          }
+        }
+      } else if (v && typeof v === "object") {
+        out.push(v as Record<string, unknown>);
+      }
     } catch { /* skip malformed */ }
   }
   return out;
@@ -106,71 +114,127 @@ function jsonLdPrice(blocks: Record<string, unknown>[]): number | undefined {
   return undefined;
 }
 
-export async function genericExtract(
-  rawUrl: string,
-  source: ImportSource
-): Promise<ImportPreviewResult> {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(rawUrl);
-  } catch {
-    return { url: rawUrl, source, confidence: "low", fields: {}, warnings: ["invalid url"] };
-  }
-
-  if (isBlocked(parsedUrl)) {
-    return { url: rawUrl, source, confidence: "low", fields: {}, warnings: ["blocked url"] };
-  }
-
-  let html: string;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-
-    let resp: Response;
-    try {
-      resp = await fetch(rawUrl, {
-        headers: {
-          "User-Agent": UA,
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-        redirect: "follow",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
+function jsonLdStr(blocks: Record<string, unknown>[], ...keys: string[]): string | undefined {
+  for (const b of blocks) {
+    for (const k of keys) {
+      const v = b[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
     }
+  }
+  return undefined;
+}
+
+function jsonLdAddress(blocks: Record<string, unknown>[]): string | undefined {
+  for (const b of blocks) {
+    const addr = b["address"];
+    if (typeof addr === "string" && addr.trim()) return addr.trim();
+    if (addr && typeof addr === "object" && !Array.isArray(addr)) {
+      const a = addr as Record<string, unknown>;
+      const parts = [a["streetAddress"], a["addressLocality"], a["addressRegion"]]
+        .filter((x): x is string => typeof x === "string" && !!x)
+        .join(", ");
+      if (parts) return parts;
+    }
+  }
+  return undefined;
+}
+
+function jsonLdSqft(blocks: Record<string, unknown>[]): number | undefined {
+  for (const b of blocks) {
+    const fs = b["floorSize"] as Record<string, unknown> | undefined;
+    if (fs && typeof fs["value"] === "number" && fs["value"] >= 200 && fs["value"] <= 10_000) {
+      return fs["value"];
+    }
+  }
+  return undefined;
+}
+
+interface FetchResult {
+  html?: string;
+  httpStatus?: number;
+  warnings: string[];
+}
+
+async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const resp = await fetch(rawUrl, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
 
     if (!resp.ok) {
-      return {
-        url: rawUrl, source, confidence: "low",
-        fields: { canonical_url: rawUrl, source },
-        warnings: [`fetch failed: http ${resp.status}`],
-      };
+      return { httpStatus: resp.status, warnings: [`fetch failed: http ${resp.status}`] };
     }
 
     const ct = resp.headers.get("content-type") ?? "";
     if (!ct.includes("html")) {
-      return {
-        url: rawUrl, source, confidence: "low",
-        fields: { canonical_url: rawUrl, source },
-        warnings: ["response is not html"],
-      };
+      return { httpStatus: resp.status, warnings: ["response is not html"] };
     }
 
     const raw = await resp.text();
-    html = raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw;
+    return {
+      html: raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw,
+      httpStatus: resp.status,
+      warnings: [],
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return {
-      url: rawUrl, source, confidence: "low",
-      fields: { canonical_url: rawUrl, source },
-      warnings: [`fetch error: ${msg}`],
-    };
+    return { warnings: [`fetch error: ${msg}`] };
+  } finally {
+    clearTimeout(timer);
   }
+}
 
+async function fetchHtmlWithScraperApi(url: string, apiKey: string): Promise<FetchResult> {
+  const scraperUrl = new URL("https://api.scraperapi.com/");
+  scraperUrl.searchParams.set("api_key", apiKey);
+  scraperUrl.searchParams.set("url", url);
+  scraperUrl.searchParams.set("render", "true");
+
+  const controller = new AbortController();
+  // scraperapi with rendering can be slow
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const resp = await fetch(scraperUrl.toString(), {
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      return { httpStatus: resp.status, warnings: [`scraperapi returned http ${resp.status}`] };
+    }
+
+    const raw = await resp.text();
+    return {
+      html: raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw,
+      httpStatus: resp.status,
+      warnings: ["used temporary scraperapi fetch mode"],
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { warnings: [`scraperapi fetch error: ${msg}`] };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface ParsedHtml {
+  fields: ExtractedFields;
+  warnings: string[];
+  confidence: Confidence;
+  extractorsUsed: string[];
+}
+
+function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHtml {
   const stripped = stripHtml(html);
   const jsonLd = parseJsonLd(html);
+  const extractorsUsed: string[] = ["generic"];
 
   const fields: ExtractedFields = { canonical_url: rawUrl, source };
 
@@ -184,10 +248,31 @@ export async function genericExtract(
   const desc = ogDesc ?? metaDesc;
   if (desc) fields.description = desc;
 
-  fields.rent = jsonLdPrice(jsonLd) ?? extractRent(stripped);
+  if (jsonLd.length > 0) {
+    extractorsUsed.push("json-ld");
+
+    const ldPrice = jsonLdPrice(jsonLd);
+    if (ldPrice != null) fields.rent = ldPrice;
+
+    const ldName = jsonLdStr(jsonLd, "name");
+    if (ldName && !fields.title) fields.title = ldName;
+
+    const ldDesc = jsonLdStr(jsonLd, "description");
+    if (ldDesc && !fields.description) fields.description = ldDesc;
+
+    const ldAddr = jsonLdAddress(jsonLd);
+    if (ldAddr) fields.address_text = ldAddr;
+
+    const ldSqft = jsonLdSqft(jsonLd);
+    if (ldSqft != null) fields.sqft = ldSqft;
+  }
+
+  extractorsUsed.push("regex");
+
+  if (fields.rent == null) fields.rent = extractRent(stripped);
   fields.beds = extractBeds(stripped);
   fields.baths = extractBaths(stripped);
-  fields.sqft = extractSqft(stripped);
+  if (fields.sqft == null) fields.sqft = extractSqft(stripped);
 
   if (/no\s*(?:broker\s*)?fee/i.test(stripped) || /owner\s*managed/i.test(stripped)) {
     fields.fee_status = "no fee";
@@ -223,5 +308,52 @@ export async function genericExtract(
   const found = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
   const confidence: Confidence = found >= 3 ? "high" : found >= 1 ? "medium" : "low";
 
-  return { url: rawUrl, source, confidence, fields, warnings };
+  return { fields, warnings, confidence, extractorsUsed };
+}
+
+export async function genericExtract(
+  rawUrl: string,
+  source: ImportSource,
+  fetchMode: FetchMode = "direct",
+  scraperApiKey?: string
+): Promise<ImportPreviewResult> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["invalid url"] };
+  }
+
+  if (isBlocked(parsedUrl)) {
+    return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["blocked url"] };
+  }
+
+  let fetchResult: FetchResult;
+  if (fetchMode === "scraperapi") {
+    if (!scraperApiKey) {
+      return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["scraperapi key not configured"] };
+    }
+    fetchResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey);
+  } else {
+    fetchResult = await fetchHtmlDirect(rawUrl);
+  }
+
+  const { html, httpStatus, warnings: fetchWarnings } = fetchResult;
+
+  if (!html) {
+    return {
+      url: rawUrl, source, confidence: "low", fetchMode,
+      fields: { canonical_url: rawUrl, source },
+      warnings: fetchWarnings,
+      debug: { httpStatus, extractorsUsed: [] },
+    };
+  }
+
+  const { fields, warnings, confidence, extractorsUsed } = parseHtml(html, rawUrl, source);
+  return {
+    url: rawUrl, source, confidence, fetchMode,
+    fields,
+    warnings: [...fetchWarnings, ...warnings],
+    debug: { httpStatus, htmlCharsParsed: html.length, extractorsUsed },
+  };
 }

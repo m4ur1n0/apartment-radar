@@ -1,17 +1,20 @@
-import type { ImportPreviewResult } from "./types";
+import type { FetchMode, ImportPreviewResult } from "./types";
 import { detectSource } from "./sources";
 import { genericExtract } from "./generic";
 
-export async function importPreview(url: string): Promise<ImportPreviewResult> {
+export async function importPreview(
+  url: string,
+  options: { fetchMode?: FetchMode; scraperApiKey?: string } = {}
+): Promise<ImportPreviewResult> {
+  const { fetchMode = "direct", scraperApiKey } = options;
+
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(url);
   } catch {
-    return { url, source: "unknown", confidence: "low", fields: {}, warnings: ["invalid url"] };
+    return { url, source: "unknown", confidence: "low", fetchMode, fields: {}, warnings: ["invalid url"] };
   }
 
   const source = detectSource(parsedUrl.hostname);
-
-  // all sources use generic extraction for now; add source-specific extractors here later
-  return genericExtract(url, source);
+  return genericExtract(url, source, fetchMode, scraperApiKey);
 }

@@ -7,6 +7,7 @@ import { importPreview } from "./importers";
 type Env = {
   DB: D1Database;
   API_ADMIN_TOKEN?: string;
+  SCRAPERAPI_KEY?: string;
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -338,12 +339,27 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
     return c.json({ error: "invalid json" }, 400);
   }
 
-  const parsed = z.object({ url: z.string().url() }).safeParse(body);
+  const parsed = z
+    .object({
+      url: z.string().url(),
+      fetchMode: z.enum(["direct", "scraperapi"]).optional().default("direct"),
+    })
+    .safeParse(body);
+
   if (!parsed.success) {
     return c.json({ error: "url required" }, 400);
   }
 
-  const result = await importPreview(parsed.data.url);
+  const { url, fetchMode } = parsed.data;
+
+  if (fetchMode === "scraperapi" && !c.env.SCRAPERAPI_KEY) {
+    return c.json({ error: "missing_scraperapi_key" }, 500);
+  }
+
+  const result = await importPreview(url, {
+    fetchMode,
+    scraperApiKey: c.env.SCRAPERAPI_KEY,
+  });
   return c.json(result);
 });
 

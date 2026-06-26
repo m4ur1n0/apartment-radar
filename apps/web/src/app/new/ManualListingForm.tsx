@@ -5,6 +5,7 @@ import Link from "next/link";
 
 type FetchStatus = "idle" | "fetching" | "done" | "error";
 type SaveStatus = "idle" | "saving" | "success" | "error";
+type FetchMode = "direct" | "scraperapi";
 
 type ExtractedFields = {
   canonical_url?: string;
@@ -30,8 +31,14 @@ type ExtractedFields = {
 type ImportPreview = {
   source: string;
   confidence: string;
+  fetchMode?: FetchMode;
   fields: ExtractedFields;
   warnings: string[];
+  debug?: {
+    httpStatus?: number;
+    htmlCharsParsed?: number;
+    extractorsUsed?: string[];
+  };
 };
 
 type FormValues = {
@@ -111,6 +118,7 @@ function applyPreview(prev: FormValues, fields: ExtractedFields, importUrl: stri
 export default function ManualListingForm() {
   const [importUrl, setImportUrl] = useState("");
   const [fetchStatus, setFetchStatus] = useState<FetchStatus>("idle");
+  const [activeFetchMode, setActiveFetchMode] = useState<FetchMode>("direct");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [fetchError, setFetchError] = useState("");
 
@@ -130,8 +138,9 @@ export default function ManualListingForm() {
     };
   }
 
-  async function handleFetch() {
+  async function handleFetch(fetchMode: FetchMode) {
     if (!importUrl) return;
+    setActiveFetchMode(fetchMode);
     setFetchStatus("fetching");
     setFetchError("");
     setPreview(null);
@@ -139,7 +148,7 @@ export default function ManualListingForm() {
       const res = await fetch("/api/listings/import-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: importUrl }),
+        body: JSON.stringify({ url: importUrl, fetchMode }),
       });
       const data = (await res.json()) as ImportPreview & { error?: string };
       if (!res.ok || data.error) {
@@ -233,7 +242,7 @@ export default function ManualListingForm() {
       {/* url fetch section */}
       <div className="mb-4 flex flex-col gap-2">
         <label className="text-sm font-medium">Paste listing URL to autofill</label>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <input
             type="url"
             value={importUrl}
@@ -243,11 +252,19 @@ export default function ManualListingForm() {
           />
           <button
             type="button"
-            onClick={handleFetch}
+            onClick={() => handleFetch("direct")}
             disabled={!importUrl || fetchStatus === "fetching"}
             className="border px-3 py-1 text-sm disabled:opacity-50"
           >
-            {fetchStatus === "fetching" ? "Fetching..." : "Fetch details"}
+            {fetchStatus === "fetching" && activeFetchMode === "direct" ? "Fetching..." : "Fetch details"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleFetch("scraperapi")}
+            disabled={!importUrl || fetchStatus === "fetching"}
+            className="border px-3 py-1 text-sm disabled:opacity-50"
+          >
+            {fetchStatus === "fetching" && activeFetchMode === "scraperapi" ? "Fetching..." : "Try ScraperAPI test"}
           </button>
         </div>
 
@@ -256,10 +273,20 @@ export default function ManualListingForm() {
         )}
 
         {preview && (
-          <div className="text-xs text-zinc-500 border-l-2 border-zinc-300 pl-2">
-            <span>Source: {preview.source} &middot; Confidence: {preview.confidence}</span>
+          <div className="text-xs text-zinc-500 border-l-2 border-zinc-300 pl-2 flex flex-col gap-0.5">
+            <span>
+              Source: {preview.source} &middot; Confidence: {preview.confidence}
+              {preview.fetchMode === "scraperapi" && (
+                <span className="ml-2 text-blue-600">[temporary scraperapi preview used]</span>
+              )}
+            </span>
             {preview.warnings.length > 0 && (
-              <span className="ml-2 text-amber-600">{preview.warnings.join(", ")}</span>
+              <span className="text-amber-600">{preview.warnings.join(", ")}</span>
+            )}
+            {preview.debug && (
+              <span className="text-zinc-400">
+                http {preview.debug.httpStatus} &middot; {preview.debug.htmlCharsParsed?.toLocaleString()} chars &middot; {preview.debug.extractorsUsed?.join(", ")}
+              </span>
             )}
           </div>
         )}
