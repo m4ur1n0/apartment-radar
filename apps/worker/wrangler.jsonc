@@ -1,0 +1,19 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "apt-radar-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-06-25",
+	"triggers": {
+		"crons": [
+			"0 14 * * *",
+			"0 22 * * *"
+		]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "apt_radar",
+			"database_id": "f7b49aaf-2211-419c-a0e1-c4d662a0f5fc"
+		}
+	]
+}
