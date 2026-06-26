@@ -5,6 +5,7 @@ import type { MiddlewareHandler } from "hono";
 import { importPreview } from "./importers";
 import { enrichListingLocation } from "./location/enrichListingLocation";
 import { SUBWAY_STATIONS } from "./location/generatedSubwayStations";
+import { geocodeAddress } from "./location/geocodeAddress";
 
 type Env = {
   DB: D1Database;
@@ -476,6 +477,38 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
     fetchMode,
     scraperApiKey: c.env.SCRAPERAPI_KEY,
   });
+
+  // if no coordinates from scrape, try geocoding the address
+  if ((!result.fields.latitude || !result.fields.longitude) && result.fields.address_text) {
+    const geo = await geocodeAddress(result.fields.address_text);
+    if (geo) {
+      result.fields.latitude = geo.latitude;
+      result.fields.longitude = geo.longitude;
+      result.warnings.push("coordinates from nominatim geocoder");
+    }
+  }
+
+  // auto-enrich subway proximity if coordinates available but subway fields are missing
+  if (
+    result.fields.latitude &&
+    result.fields.longitude &&
+    !result.fields.nearest_subway_station
+  ) {
+    const enrichment = enrichListingLocation(
+      { latitude: result.fields.latitude, longitude: result.fields.longitude },
+      SUBWAY_STATIONS
+    );
+    if (enrichment.nearest_subway_station) {
+      result.fields.nearest_subway_station = enrichment.nearest_subway_station;
+      result.fields.nearest_subway_lines = enrichment.nearest_subway_lines;
+      result.fields.subway_walk_minutes = enrichment.subway_walk_minutes;
+      result.fields.subway_walk_source = enrichment.subway_walk_source;
+      result.fields.subway_walk_confidence = enrichment.subway_walk_confidence;
+      result.fields.google_maps_directions_url = enrichment.google_maps_directions_url;
+      result.warnings.push(...enrichment.warnings);
+    }
+  }
+
   return c.json(result);
 });
 

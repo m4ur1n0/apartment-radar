@@ -180,6 +180,42 @@ function jsonLdSqft(blocks: Record<string, unknown>[]): number | undefined {
   return undefined;
 }
 
+function jsonLdCoords(blocks: Record<string, unknown>[]): { lat?: number; lng?: number } {
+  for (const b of blocks) {
+    const geo = b["geo"] as Record<string, unknown> | undefined;
+    if (geo) {
+      const lat = typeof geo["latitude"] === "number" ? geo["latitude"] : parseFloat(String(geo["latitude"] ?? ""));
+      const lng = typeof geo["longitude"] === "number" ? geo["longitude"] : parseFloat(String(geo["longitude"] ?? ""));
+      if (!isNaN(lat) && !isNaN(lng) && lat >= 40.0 && lat <= 41.5 && lng >= -75.0 && lng <= -73.0) {
+        return { lat, lng };
+      }
+    }
+  }
+  return {};
+}
+
+function extractCoordsFromText(html: string): { lat?: number; lng?: number } {
+  // data-latitude / data-longitude attributes (craigslist, some sites)
+  const latAttr = html.match(/data-(?:latitude|lat)=["']([-\d.]+)["']/i);
+  const lngAttr = html.match(/data-(?:longitude|lng|lon)=["']([-\d.]+)["']/i);
+  if (latAttr && lngAttr) {
+    const lat = parseFloat(latAttr[1]);
+    const lng = parseFloat(lngAttr[1]);
+    if (lat >= 40.0 && lat <= 41.5 && lng >= -75.0 && lng <= -73.0) return { lat, lng };
+  }
+
+  // inline script: "latitude":40.xxx or latitude:40.xxx
+  const latScript = html.match(/"?latitude"?\s*:\s*([-\d.]{5,12})/);
+  const lngScript = html.match(/"?longitude"?\s*:\s*([-\d.]{7,12})/);
+  if (latScript && lngScript) {
+    const lat = parseFloat(latScript[1]);
+    const lng = parseFloat(lngScript[1]);
+    if (lat >= 40.0 && lat <= 41.5 && lng >= -75.0 && lng <= -73.0) return { lat, lng };
+  }
+
+  return {};
+}
+
 function calcConfidence(fields: ExtractedFields, source: ImportSource): Confidence {
   if (source === "zillow") {
     const coreCount = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
@@ -357,6 +393,18 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHt
       const s = jsonLdSqft(jsonLd);
       if (s != null) fields.sqft = s;
     }
+    if (!fields.latitude || !fields.longitude) {
+      const { lat, lng } = jsonLdCoords(jsonLd);
+      if (lat != null && !fields.latitude) fields.latitude = lat;
+      if (lng != null && !fields.longitude) fields.longitude = lng;
+    }
+  }
+
+  // lat/lng from data attributes or inline scripts (non-zillow sites)
+  if ((!fields.latitude || !fields.longitude) && source !== "zillow") {
+    const { lat, lng } = extractCoordsFromText(html);
+    if (lat != null && !fields.latitude) fields.latitude = lat;
+    if (lng != null && !fields.longitude) fields.longitude = lng;
   }
 
   extractorsUsed.push("regex");

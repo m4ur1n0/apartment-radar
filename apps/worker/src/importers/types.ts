@@ -18,6 +18,8 @@ export interface ExtractedFields {
   description?: string;
   address_text?: string;
   neighborhood?: string;
+  latitude?: number;
+  longitude?: number;
   rent?: number;
   beds?: number;
   baths?: number;
@@ -25,6 +27,10 @@ export interface ExtractedFields {
   available_date?: string;
   nearest_subway_station?: string;
   nearest_subway_lines?: string;
+  subway_walk_minutes?: number;
+  subway_walk_source?: string;
+  subway_walk_confidence?: string;
+  google_maps_directions_url?: string;
   fee_status?: string;
   laundry?: string;
   dishwasher?: boolean;

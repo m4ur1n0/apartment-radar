@@ -14,6 +14,8 @@ type ExtractedFields = {
   description?: string;
   address_text?: string;
   neighborhood?: string;
+  latitude?: number;
+  longitude?: number;
   rent?: number;
   beds?: number;
   baths?: number;
@@ -21,6 +23,10 @@ type ExtractedFields = {
   available_date?: string;
   nearest_subway_station?: string;
   nearest_subway_lines?: string;
+  subway_walk_minutes?: number;
+  subway_walk_source?: string;
+  subway_walk_confidence?: string;
+  google_maps_directions_url?: string;
   fee_status?: string;
   laundry?: string;
   dishwasher?: boolean;
@@ -107,6 +113,7 @@ function applyPreview(prev: FormValues, fields: ExtractedFields, importUrl: stri
     ...(fields.available_date != null && { available_date: fields.available_date }),
     ...(fields.nearest_subway_station != null && { nearest_subway_station: fields.nearest_subway_station }),
     ...(fields.nearest_subway_lines != null && { nearest_subway_lines: fields.nearest_subway_lines }),
+    ...(fields.subway_walk_minutes != null && { subway_walk_minutes: String(fields.subway_walk_minutes) }),
     ...(fields.fee_status != null && { fee_status: fields.fee_status }),
     ...(fields.laundry != null && { laundry: fields.laundry }),
     ...(fields.pets != null && { pets: fields.pets }),

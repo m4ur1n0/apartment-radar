@@ -156,6 +156,18 @@ function extractFromScriptText(content: string): Partial<ExtractedFields> {
   const desc = content.match(/"(?:description|homeDescription)"\s*:\s*"([^"]{20,})"/);
   if (desc) f.description = desc[1].slice(0, 500);
 
+  // "latitude":40.xxx, "longitude":-73.xxx
+  const lat = content.match(/"latitude"\s*:\s*([-\d.]+)/);
+  if (lat) {
+    const v = parseFloat(lat[1]);
+    if (v >= 40.0 && v <= 41.5) f.latitude = v;
+  }
+  const lng = content.match(/"longitude"\s*:\s*([-\d.]+)/);
+  if (lng) {
+    const v = parseFloat(lng[1]);
+    if (v >= -75.0 && v <= -73.0) f.longitude = v;
+  }
+
   return f;
 }
 
@@ -208,6 +220,15 @@ function mergeJsonFields(obj: unknown, fields: ExtractedFields): void {
   const avail = findDeep(obj, ["datePosted", "availability", "availableDate"]);
   if (!fields.available_date && typeof avail === "string" && avail.trim()) {
     fields.available_date = avail.trim();
+  }
+
+  const lat = findDeep(obj, ["latitude", "lat"]);
+  if (!fields.latitude && typeof lat === "number" && lat >= 40.0 && lat <= 41.5) {
+    fields.latitude = lat;
+  }
+  const lng = findDeep(obj, ["longitude", "lng", "lon"]);
+  if (!fields.longitude && typeof lng === "number" && lng >= -75.0 && lng <= -73.0) {
+    fields.longitude = lng;
   }
 }
 
