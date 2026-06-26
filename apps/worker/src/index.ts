@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import type { MiddlewareHandler } from "hono";
+import { importPreview } from "./importers";
 
 type Env = {
   DB: D1Database;
@@ -327,6 +328,23 @@ app.post("/listings/manual", requireAdmin, async (c) => {
     .run();
 
   return c.json({ listing });
+});
+
+app.post("/listings/import-preview", requireAdmin, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid json" }, 400);
+  }
+
+  const parsed = z.object({ url: z.string().url() }).safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "url required" }, 400);
+  }
+
+  const result = await importPreview(parsed.data.url);
+  return c.json(result);
 });
 
 app.post("/listings/:id/ratings", requireAdmin, async (c) => {

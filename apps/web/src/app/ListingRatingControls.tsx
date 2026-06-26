@@ -37,7 +37,7 @@ export default function ListingRatingControls({ listingId }: { listingId: string
         className="bg-zinc-800 border border-zinc-700 px-2 py-1 rounded text-zinc-300"
       >
         <option value="Theo">Theo</option>
-        <option value="Roommate">Roommate</option>
+        <option value="Sam">Sam</option>
       </select>
 
       <div className="flex gap-1">
