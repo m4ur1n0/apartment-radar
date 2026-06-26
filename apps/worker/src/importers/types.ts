@@ -43,5 +43,9 @@ export interface ImportPreviewResult {
     httpStatus?: number;
     htmlCharsParsed?: number;
     extractorsUsed: string[];
+    zillowDetailSignalsFound?: number;
+    zillowJsonScriptsFound?: number;
+    zillowPropertyCardsFound?: number;
+    textSample?: string;
   };
 }

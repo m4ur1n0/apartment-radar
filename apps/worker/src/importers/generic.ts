@@ -1,8 +1,39 @@
 import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, ImportSource } from "./types";
+import { extractZillowFields } from "./zillow";
 
 const MAX_BYTES = 500_000;
+const HEAD_BUDGET = 60_000;
+
+// zillow (and similar sites) have massive style/script blocks in <head>.
+// if <body> starts late, we take a small head slice (for meta/og tags) + body content.
+function smartSlice(raw: string, maxBytes: number): string {
+  if (raw.length <= maxBytes) return raw;
+  const bodyIdx = raw.search(/<body[\s>]/i);
+  if (bodyIdx === -1 || bodyIdx < maxBytes * 0.25) {
+    return raw.slice(0, maxBytes);
+  }
+  const headEndIdx = raw.search(/<\/head>/i);
+  const headContent =
+    headEndIdx !== -1 && headEndIdx < HEAD_BUDGET
+      ? raw.slice(0, headEndIdx + 7)
+      : raw.slice(0, HEAD_BUDGET);
+  const bodyContent = raw.slice(bodyIdx, bodyIdx + (maxBytes - headContent.length));
+  return headContent + bodyContent;
+}
+
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// instruction set used when fetching zillow via scraperapi
+const ZILLOW_INSTRUCTION_SET = [
+  {
+    type: "wait_for_selector",
+    selector: { type: "css", value: "span[data-test='property-card-price']" },
+    timeout: 8,
+  },
+  { type: "scroll", direction: "y", value: "bottom" },
+  { type: "wait", value: 5 },
+];
 
 function isBlocked(url: URL): boolean {
   const h = url.hostname.toLowerCase();
@@ -85,14 +116,14 @@ function extractRent(text: string): number | undefined {
 }
 
 function extractBeds(text: string): number | undefined {
-  const vals = Array.from(text.matchAll(/(\d+(?:\.\d)?)\s*(?:bed(?:room)?s?|br)\b/gi))
+  const vals = Array.from(text.matchAll(/(\d+(?:\.\d)?)\s*(?:bds?|bed(?:room)?s?|br)\b/gi))
     .map((m) => parseFloat(m[1]))
     .filter((v) => v >= 0 && v <= 10);
   return mostFrequent(vals);
 }
 
 function extractBaths(text: string): number | undefined {
-  const vals = Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(?:bath(?:room)?s?|ba)\b/gi))
+  const vals = Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(?:ba|bath(?:room)?s?)\b/gi))
     .map((m) => parseFloat(m[1]))
     .filter((v) => v >= 0 && v <= 10);
   return mostFrequent(vals);
@@ -149,6 +180,18 @@ function jsonLdSqft(blocks: Record<string, unknown>[]): number | undefined {
   return undefined;
 }
 
+function calcConfidence(fields: ExtractedFields, source: ImportSource): Confidence {
+  if (source === "zillow") {
+    const coreCount = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
+    const hasLocation = fields.address_text != null || fields.neighborhood != null;
+    if (coreCount >= 3 && hasLocation) return "high";
+    if (fields.rent != null && (coreCount + (hasLocation ? 1 : 0)) >= 3) return "medium";
+    return coreCount >= 1 ? "medium" : "low";
+  }
+  const found = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
+  return found >= 3 ? "high" : found >= 1 ? "medium" : "low";
+}
+
 interface FetchResult {
   html?: string;
   httpStatus?: number;
@@ -180,7 +223,7 @@ async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
 
     const raw = await resp.text();
     return {
-      html: raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw,
+      html: smartSlice(raw, MAX_BYTES),
       httpStatus: resp.status,
       warnings: [],
     };
@@ -192,17 +235,29 @@ async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
   }
 }
 
-async function fetchHtmlWithScraperApi(url: string, apiKey: string): Promise<FetchResult> {
+async function fetchHtmlWithScraperApi(
+  url: string,
+  apiKey: string,
+  opts: { useInstructions?: boolean } = {}
+): Promise<FetchResult> {
   const scraperUrl = new URL("https://api.scraperapi.com/");
-  scraperUrl.searchParams.set("api_key", apiKey);
   scraperUrl.searchParams.set("url", url);
-  scraperUrl.searchParams.set("render", "true");
 
-  const controller = new AbortController();
+  const headers: Record<string, string> = {
+    "x-sapi-api_key": apiKey,
+    "x-sapi-render": "true",
+  };
+
+  if (opts.useInstructions) {
+    headers["x-sapi-instruction_set"] = JSON.stringify(ZILLOW_INSTRUCTION_SET);
+  }
+
   // scraperapi with rendering can be slow
+  const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
   try {
     const resp = await fetch(scraperUrl.toString(), {
+      headers,
       signal: controller.signal,
     });
 
@@ -212,7 +267,7 @@ async function fetchHtmlWithScraperApi(url: string, apiKey: string): Promise<Fet
 
     const raw = await resp.text();
     return {
-      html: raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw,
+      html: smartSlice(raw, MAX_BYTES),
       httpStatus: resp.status,
       warnings: ["used temporary scraperapi fetch mode"],
     };
@@ -229,86 +284,139 @@ interface ParsedHtml {
   warnings: string[];
   confidence: Confidence;
   extractorsUsed: string[];
+  textSample: string;
+  zillowDebug?: {
+    zillowDetailSignalsFound: number;
+    zillowJsonScriptsFound: number;
+    zillowPropertyCardsFound: number;
+  };
 }
 
 function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHtml {
-  const stripped = stripHtml(html);
-  const jsonLd = parseJsonLd(html);
-  const extractorsUsed: string[] = ["generic"];
-
   const fields: ExtractedFields = { canonical_url: rawUrl, source };
+  const allWarnings: string[] = [];
+  const extractorsUsed: string[] = [];
+  let zillowDebug: ParsedHtml["zillowDebug"];
+  const stripped = stripHtml(html);
+  const textSample = stripped.slice(0, 300);
 
-  const ogTitle = getMeta("og:title", html);
-  const htmlTitle = getTag("title", html);
-  const title = ogTitle ?? htmlTitle;
-  if (title) fields.title = title;
+  // zillow-specific parsers run first, filling fields before generic
+  if (source === "zillow") {
+    const zr = extractZillowFields({ url: rawUrl, html });
+    Object.assign(fields, zr.fields);
+    allWarnings.push(...zr.warnings);
+    extractorsUsed.push(...zr.extractorsUsed);
+    zillowDebug = zr.debug;
+  }
 
-  const ogDesc = getMeta("og:description", html);
-  const metaDesc = getMeta("description", html);
-  const desc = ogDesc ?? metaDesc;
-  if (desc) fields.description = desc;
+  // generic extraction fills whatever is still missing
+  const jsonLd = parseJsonLd(html);
+  extractorsUsed.push("generic");
+
+  if (!fields.title) {
+    const ogTitle = getMeta("og:title", html);
+    const htmlTitle = getTag("title", html);
+    // filter placeholder text that zillow SVG image elements inject into <title> tags
+    const isPlaceholder = (t: string) => /no image|not available|placeholder/i.test(t);
+    const title =
+      (ogTitle && !isPlaceholder(ogTitle)) ? ogTitle :
+      (htmlTitle && !isPlaceholder(htmlTitle)) ? htmlTitle :
+      undefined;
+    if (title) fields.title = title;
+  }
+
+  // for zillow, use address as title if no clean title found
+  if (!fields.title && source === "zillow" && fields.address_text) {
+    fields.title = fields.address_text;
+  }
+
+  if (!fields.description) {
+    const desc = getMeta("og:description", html) ?? getMeta("description", html);
+    if (desc) fields.description = desc;
+  }
 
   if (jsonLd.length > 0) {
     extractorsUsed.push("json-ld");
-
-    const ldPrice = jsonLdPrice(jsonLd);
-    if (ldPrice != null) fields.rent = ldPrice;
-
-    const ldName = jsonLdStr(jsonLd, "name");
-    if (ldName && !fields.title) fields.title = ldName;
-
-    const ldDesc = jsonLdStr(jsonLd, "description");
-    if (ldDesc && !fields.description) fields.description = ldDesc;
-
-    const ldAddr = jsonLdAddress(jsonLd);
-    if (ldAddr) fields.address_text = ldAddr;
-
-    const ldSqft = jsonLdSqft(jsonLd);
-    if (ldSqft != null) fields.sqft = ldSqft;
+    if (!fields.rent) {
+      const p = jsonLdPrice(jsonLd);
+      if (p != null) fields.rent = p;
+    }
+    if (!fields.title) {
+      const n = jsonLdStr(jsonLd, "name");
+      if (n) fields.title = n;
+    }
+    if (!fields.description) {
+      const d = jsonLdStr(jsonLd, "description");
+      if (d) fields.description = d;
+    }
+    if (!fields.address_text) {
+      const a = jsonLdAddress(jsonLd);
+      if (a) fields.address_text = a;
+    }
+    if (!fields.sqft) {
+      const s = jsonLdSqft(jsonLd);
+      if (s != null) fields.sqft = s;
+    }
   }
 
   extractorsUsed.push("regex");
 
-  if (fields.rent == null) fields.rent = extractRent(stripped);
-  fields.beds = extractBeds(stripped);
-  fields.baths = extractBaths(stripped);
-  if (fields.sqft == null) fields.sqft = extractSqft(stripped);
-
-  if (/no\s*(?:broker\s*)?fee/i.test(stripped) || /owner\s*managed/i.test(stripped)) {
-    fields.fee_status = "no fee";
-  } else if (/broker\s*fee|one\s*month.*fee/i.test(stripped)) {
-    fields.fee_status = "broker fee";
+  if (!fields.rent) fields.rent = extractRent(stripped);
+  if (!fields.beds) fields.beds = extractBeds(stripped);
+  if (!fields.baths) fields.baths = extractBaths(stripped);
+  // skip sqft regex if zillow already signaled it's unavailable
+  if (!fields.sqft && !allWarnings.includes("sqft unavailable on zillow page")) {
+    fields.sqft = extractSqft(stripped);
   }
 
-  if (/(?:in.unit\s+laundry|w\/d\s+in\s+unit|washer.dryer\s+in\s+unit)/i.test(stripped)) {
-    fields.laundry = "in-unit";
-  } else if (/(?:laundry\s+in\s+(?:building|basement)|shared\s+laundry|common\s+laundry|coin\s+laundry|on.site\s+laundry)/i.test(stripped)) {
-    fields.laundry = "in building";
+  if (!fields.fee_status) {
+    if (/no\s*(?:broker\s*)?fee/i.test(stripped) || /owner\s*managed/i.test(stripped)) {
+      fields.fee_status = "no fee";
+    } else if (/broker\s*fee|one\s*month.*fee/i.test(stripped)) {
+      fields.fee_status = "broker fee";
+    }
   }
 
-  if (/dishwasher/i.test(stripped)) fields.dishwasher = true;
+  if (!fields.laundry) {
+    if (/(?:in.unit\s+laundry|w\/d\s+in\s+unit|washer.dryer\s+in\s+unit)/i.test(stripped)) {
+      fields.laundry = "in-unit";
+    } else if (/(?:laundry\s+in\s+(?:building|basement)|shared\s+laundry|common\s+laundry|coin\s+laundry|on.site\s+laundry)/i.test(stripped)) {
+      fields.laundry = "in building";
+    }
+  }
 
-  if (/private\s+(?:yard|garden|roof)|outdoor\s+space|balcon[yi]|roof\s+(?:deck|access)|backyard/i.test(stripped)) {
+  if (!fields.dishwasher && /dishwasher/i.test(stripped)) fields.dishwasher = true;
+
+  if (!fields.outdoor_space && /private\s+(?:yard|garden|roof)|outdoor\s+space|balcon[yi]|roof\s+(?:deck|access)|backyard/i.test(stripped)) {
     fields.outdoor_space = true;
   }
 
-  if (/pets?\s+(?:ok|allowed|welcome|friendly)|cats?\s+ok|dogs?\s+ok/i.test(stripped)) {
-    fields.pets = "allowed";
-  } else if (/no\s+pets?|pets?\s+not\s+(?:allowed|permitted)/i.test(stripped)) {
-    fields.pets = "no pets";
+  if (!fields.pets) {
+    if (/pets?\s+(?:ok|allowed|welcome|friendly)|cats?\s+ok|dogs?\s+ok/i.test(stripped)) {
+      fields.pets = "allowed";
+    } else if (/no\s+pets?|pets?\s+not\s+(?:allowed|permitted)/i.test(stripped)) {
+      fields.pets = "no pets";
+    }
   }
 
-  const warnings: string[] = [];
+  const warnings = [...allWarnings];
   if (!fields.rent) warnings.push("rent not found");
   if (!fields.beds) warnings.push("beds not found");
   if (!fields.baths) warnings.push("baths not found");
-  if (!fields.sqft) warnings.push("sqft not found");
+  // only add "sqft not found" if not already warned about it
+  if (!fields.sqft && !warnings.includes("sqft unavailable on zillow page")) {
+    warnings.push("sqft not found");
+  }
   if (!fields.address_text) warnings.push("address not found");
 
-  const found = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
-  const confidence: Confidence = found >= 3 ? "high" : found >= 1 ? "medium" : "low";
-
-  return { fields, warnings, confidence, extractorsUsed };
+  return {
+    fields,
+    warnings,
+    confidence: calcConfidence(fields, source),
+    extractorsUsed,
+    textSample,
+    zillowDebug,
+  };
 }
 
 export async function genericExtract(
@@ -333,7 +441,9 @@ export async function genericExtract(
     if (!scraperApiKey) {
       return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["scraperapi key not configured"] };
     }
-    fetchResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey);
+    fetchResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, {
+      useInstructions: source === "zillow",
+    });
   } else {
     fetchResult = await fetchHtmlDirect(rawUrl);
   }
@@ -349,11 +459,19 @@ export async function genericExtract(
     };
   }
 
-  const { fields, warnings, confidence, extractorsUsed } = parseHtml(html, rawUrl, source);
+  const { fields, warnings, confidence, extractorsUsed, textSample, zillowDebug } = parseHtml(html, rawUrl, source);
   return {
     url: rawUrl, source, confidence, fetchMode,
     fields,
     warnings: [...fetchWarnings, ...warnings],
-    debug: { httpStatus, htmlCharsParsed: html.length, extractorsUsed },
+    debug: {
+      httpStatus,
+      htmlCharsParsed: html.length,
+      extractorsUsed,
+      zillowDetailSignalsFound: zillowDebug?.zillowDetailSignalsFound,
+      zillowJsonScriptsFound: zillowDebug?.zillowJsonScriptsFound,
+      zillowPropertyCardsFound: zillowDebug?.zillowPropertyCardsFound,
+      textSample,
+    },
   };
 }
