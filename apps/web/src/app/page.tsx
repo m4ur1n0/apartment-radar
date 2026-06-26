@@ -1,6 +1,15 @@
 import Link from "next/link";
 import ListingRatingControls from "./ListingRatingControls";
 
+type SubwayEstimate = {
+  station_id: string;
+  station_name: string;
+  lines: string;
+  estimated_walk_minutes: number;
+  confidence: string;
+  google_maps_directions_url: string | null;
+};
+
 type Listing = {
   id: string;
   canonical_url: string;
@@ -21,6 +30,9 @@ type Listing = {
   nearest_subway_station: string | null;
   nearest_subway_lines: string | null;
   subway_walk_minutes: number | null;
+  subway_walk_source: string | null;
+  subway_walk_confidence: string | null;
+  google_maps_directions_url: string | null;
   manhattan_commute_minutes: number | null;
   fee_status: string | null;
   laundry: string | null;
@@ -38,6 +50,7 @@ type Listing = {
   last_seen_at: string;
   created_at: string;
   updated_at: string;
+  subway_estimates: SubwayEstimate[];
 };
 
 function urgencyLabel(score: number): string {
@@ -164,18 +177,41 @@ export default async function Home() {
                   l.nearest_subway_lines ||
                   l.subway_walk_minutes != null) && (
                   <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3 text-sm text-zinc-400">
-                    {l.subway_walk_minutes != null && (
+                    {l.subway_walk_minutes != null && l.nearest_subway_station && (
+                      <span>
+                        ~{l.subway_walk_minutes} min to {l.nearest_subway_station}
+                        {l.nearest_subway_lines ? ` (${l.nearest_subway_lines})` : ""}
+                        {l.subway_walk_source === "estimated_haversine" ? ", estimated" : ""}
+                      </span>
+                    )}
+                    {l.subway_walk_minutes != null && !l.nearest_subway_station && (
                       <span>{l.subway_walk_minutes} min walk</span>
                     )}
-                    {l.nearest_subway_lines && (
+                    {!l.nearest_subway_station && l.nearest_subway_lines && (
                       <span>{l.nearest_subway_lines}</span>
                     )}
-                    {l.nearest_subway_station && (
-                      <span>{l.nearest_subway_station}</span>
+                    {l.google_maps_directions_url && (
+                      <a
+                        href={l.google_maps_directions_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300"
+                      >
+                        Verify walk in Maps
+                      </a>
                     )}
                     {l.manhattan_commute_minutes != null && (
                       <span>{l.manhattan_commute_minutes} min to Manhattan</span>
                     )}
+                  </div>
+                )}
+                {l.subway_estimates && l.subway_estimates.length > 1 && (
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 mb-3 text-xs text-zinc-500">
+                    {l.subway_estimates.slice(1, 3).map((e) => (
+                      <span key={e.station_id}>
+                        {e.station_name} ({e.lines}) ~{e.estimated_walk_minutes} min
+                      </span>
+                    ))}
                   </div>
                 )}
 

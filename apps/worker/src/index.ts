@@ -3,6 +3,8 @@ import { cors } from "hono/cors";
 import { z } from "zod";
 import type { MiddlewareHandler } from "hono";
 import { importPreview } from "./importers";
+import { enrichListingLocation } from "./location/enrichListingLocation";
+import { SUBWAY_STATIONS } from "./location/generatedSubwayStations";
 
 type Env = {
   DB: D1Database;
@@ -227,7 +229,67 @@ app.get("/listings", async (c) => {
     .bind(status, limit)
     .all();
 
-  return c.json({ listings: rows.results });
+  const listings = rows.results as Record<string, unknown>[];
+
+  const listingIds = listings.map((l) => l.id as string);
+
+  let estimatesByListing: Record<string, unknown[]> = {};
+  if (listingIds.length > 0) {
+    const placeholders = listingIds.map(() => "?").join(",");
+    const estimateRows = await c.env.DB.prepare(
+      `select * from listing_subway_estimates where listing_id in (${placeholders})
+       order by estimated_walk_minutes asc`
+    )
+      .bind(...listingIds)
+      .all();
+
+    for (const e of estimateRows.results) {
+      const row = e as Record<string, unknown>;
+      const lid = row.listing_id as string;
+      if (!estimatesByListing[lid]) estimatesByListing[lid] = [];
+      if (estimatesByListing[lid].length < 5) estimatesByListing[lid].push(row);
+    }
+  }
+
+  const enriched = listings.map((l) => ({
+    ...l,
+    subway_estimates: estimatesByListing[l.id as string] ?? [],
+  }));
+
+  return c.json({ listings: enriched });
+});
+
+app.post("/admin/seed-subway-stations", requireAdmin, async (c) => {
+  const stmts = SUBWAY_STATIONS.map((s) =>
+    c.env.DB.prepare(
+      `insert into subway_stations (id, name, borough, latitude, longitude, lines, gtfs_stop_ids, created_at)
+       values (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       on conflict(id) do update set
+         name = excluded.name,
+         borough = excluded.borough,
+         latitude = excluded.latitude,
+         longitude = excluded.longitude,
+         lines = excluded.lines,
+         gtfs_stop_ids = excluded.gtfs_stop_ids`
+    ).bind(
+      s.id,
+      s.name,
+      s.borough,
+      s.latitude,
+      s.longitude,
+      s.lines.join(","),
+      s.gtfs_stop_ids ?? null
+    )
+  );
+
+  const batchSize = 50;
+  let upserted = 0;
+  for (let i = 0; i < stmts.length; i += batchSize) {
+    await c.env.DB.batch(stmts.slice(i, i + batchSize));
+    upserted += Math.min(batchSize, stmts.length - i);
+  }
+
+  return c.json({ ok: true, upserted });
 });
 
 app.post("/listings/manual", requireAdmin, async (c) => {
@@ -244,7 +306,28 @@ app.post("/listings/manual", requireAdmin, async (c) => {
   }
 
   const d = parsed.data;
-  const scores = calcScores(d);
+
+  // enrich subway proximity from coordinates if user didn't provide subway fields
+  const enrichment = enrichListingLocation(
+    { latitude: d.latitude, longitude: d.longitude, address_text: d.address_text },
+    SUBWAY_STATIONS
+  );
+
+  const subwayStation = d.nearest_subway_station ?? enrichment.nearest_subway_station ?? null;
+  const subwayLines = d.nearest_subway_lines ?? enrichment.nearest_subway_lines ?? null;
+  const subwayWalk = d.subway_walk_minutes ?? enrichment.subway_walk_minutes ?? null;
+  const subwayWalkSource = enrichment.subway_walk_source ?? null;
+  const subwayWalkConfidence = enrichment.subway_walk_confidence ?? null;
+  const mapsUrl = enrichment.google_maps_directions_url ?? null;
+
+  const enrichedD: ListingInput = {
+    ...d,
+    nearest_subway_station: subwayStation ?? undefined,
+    nearest_subway_lines: subwayLines ?? undefined,
+    subway_walk_minutes: subwayWalk ?? undefined,
+  };
+
+  const scores = calcScores(enrichedD);
   const id = crypto.randomUUID();
 
   await c.env.DB.prepare(
@@ -253,6 +336,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       address_text, neighborhood, borough, latitude, longitude,
       rent, beds, baths, sqft, available_date,
       nearest_subway_station, nearest_subway_lines, subway_walk_minutes, manhattan_commute_minutes,
+      subway_walk_source, subway_walk_confidence, google_maps_directions_url,
       fee_status, laundry, dishwasher, outdoor_space, pets, floor_number, elevator,
       fit_score, deal_score, urgency_score, risk_score
     ) values (
@@ -260,6 +344,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?,
+      ?, ?, ?,
       ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?
     )
@@ -282,6 +367,9 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       nearest_subway_lines = excluded.nearest_subway_lines,
       subway_walk_minutes = excluded.subway_walk_minutes,
       manhattan_commute_minutes = excluded.manhattan_commute_minutes,
+      subway_walk_source = excluded.subway_walk_source,
+      subway_walk_confidence = excluded.subway_walk_confidence,
+      google_maps_directions_url = excluded.google_maps_directions_url,
       fee_status = excluded.fee_status,
       laundry = excluded.laundry,
       dishwasher = excluded.dishwasher,
@@ -300,7 +388,8 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       id, d.canonical_url, d.source, d.source_listing_id ?? null, d.title ?? null, d.description ?? null,
       d.address_text ?? null, d.neighborhood ?? null, d.borough, d.latitude ?? null, d.longitude ?? null,
       d.rent, d.beds, d.baths, d.sqft ?? null, d.available_date ?? null,
-      d.nearest_subway_station ?? null, d.nearest_subway_lines ?? null, d.subway_walk_minutes ?? null, d.manhattan_commute_minutes ?? null,
+      subwayStation, subwayLines, subwayWalk, d.manhattan_commute_minutes ?? null,
+      subwayWalkSource, subwayWalkConfidence, mapsUrl,
       d.fee_status ?? null, d.laundry ?? null, boolToInt(d.dishwasher), boolToInt(d.outdoor_space), d.pets ?? null, d.floor_number ?? null, boolToInt(d.elevator),
       scores.fit_score, scores.deal_score, scores.urgency_score, scores.risk_score
     )
@@ -328,7 +417,34 @@ app.post("/listings/manual", requireAdmin, async (c) => {
     )
     .run();
 
-  return c.json({ listing });
+  if (enrichment.subway_estimates.length > 0) {
+    const listingId = (listing as Record<string, unknown>).id as string;
+    const deleteStmt = c.env.DB.prepare(
+      `delete from listing_subway_estimates where listing_id = ?`
+    ).bind(listingId);
+    const estimateStmts = enrichment.subway_estimates.map((e) =>
+      c.env.DB.prepare(
+        `insert into listing_subway_estimates
+           (id, listing_id, station_id, station_name, lines, straight_line_miles,
+            estimated_walk_minutes, estimate_method, confidence, google_maps_directions_url, created_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+      ).bind(
+        crypto.randomUUID(),
+        listingId,
+        e.station_id,
+        e.station_name,
+        e.lines.join(","),
+        e.straight_line_miles,
+        e.estimated_walk_minutes,
+        e.estimate_method,
+        e.confidence,
+        e.google_maps_directions_url
+      )
+    );
+    await c.env.DB.batch([deleteStmt, ...estimateStmts]);
+  }
+
+  return c.json({ listing, enrichment_warnings: enrichment.warnings });
 });
 
 app.post("/listings/import-preview", requireAdmin, async (c) => {
