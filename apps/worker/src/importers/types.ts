@@ -14,6 +14,7 @@ export type FetchMode = "direct" | "scraperapi";
 export interface ExtractedFields {
   canonical_url?: string;
   source?: string;
+  source_listing_id?: string;
   title?: string;
   description?: string;
   address_text?: string;
@@ -35,7 +36,9 @@ export interface ExtractedFields {
   laundry?: string;
   dishwasher?: boolean;
   outdoor_space?: boolean;
+  elevator?: boolean;
   pets?: string;
+  amenities?: string[];
 }
 
 export interface ImportPreviewResult {
@@ -52,6 +55,8 @@ export interface ImportPreviewResult {
     zillowDetailSignalsFound?: number;
     zillowJsonScriptsFound?: number;
     zillowPropertyCardsFound?: number;
+    nooklynDetailSignalsFound?: number;
+    amenitiesFoundCount?: number;
     textSample?: string;
   };
 }

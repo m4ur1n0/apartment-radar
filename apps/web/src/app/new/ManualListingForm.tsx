@@ -10,6 +10,7 @@ type FetchMode = "direct" | "scraperapi";
 type ExtractedFields = {
   canonical_url?: string;
   source?: string;
+  source_listing_id?: string;
   title?: string;
   description?: string;
   address_text?: string;
@@ -31,7 +32,9 @@ type ExtractedFields = {
   laundry?: string;
   dishwasher?: boolean;
   outdoor_space?: boolean;
+  elevator?: boolean;
   pets?: string;
+  amenities?: string[];
 };
 
 type ImportPreview = {
@@ -50,6 +53,7 @@ type ImportPreview = {
 type FormValues = {
   canonical_url: string;
   source: string;
+  source_listing_id: string;
   title: string;
   description: string;
   address_text: string;
@@ -70,11 +74,13 @@ type FormValues = {
   dishwasher: boolean;
   outdoor_space: boolean;
   elevator: boolean;
+  amenities: string[];
 };
 
 const EMPTY: FormValues = {
   canonical_url: "",
   source: "manual",
+  source_listing_id: "",
   title: "",
   description: "",
   address_text: "",
@@ -95,6 +101,7 @@ const EMPTY: FormValues = {
   dishwasher: false,
   outdoor_space: false,
   elevator: false,
+  amenities: [],
 };
 
 function applyPreview(prev: FormValues, fields: ExtractedFields, importUrl: string): FormValues {
@@ -102,6 +109,7 @@ function applyPreview(prev: FormValues, fields: ExtractedFields, importUrl: stri
     ...prev,
     canonical_url: fields.canonical_url ?? importUrl,
     source: fields.source ?? prev.source,
+    ...(fields.source_listing_id != null && { source_listing_id: fields.source_listing_id }),
     ...(fields.title != null && { title: fields.title }),
     ...(fields.description != null && { description: fields.description }),
     ...(fields.address_text != null && { address_text: fields.address_text }),
@@ -119,6 +127,8 @@ function applyPreview(prev: FormValues, fields: ExtractedFields, importUrl: stri
     ...(fields.pets != null && { pets: fields.pets }),
     ...(fields.dishwasher != null && { dishwasher: fields.dishwasher }),
     ...(fields.outdoor_space != null && { outdoor_space: fields.outdoor_space }),
+    ...(fields.elevator != null && { elevator: fields.elevator }),
+    ...(fields.amenities?.length && { amenities: fields.amenities }),
   };
 }
 
@@ -213,6 +223,8 @@ export default function ManualListingForm() {
     body.dishwasher = values.dishwasher;
     body.outdoor_space = values.outdoor_space;
     body.elevator = values.elevator;
+    if (values.source_listing_id) body.source_listing_id = values.source_listing_id;
+    if (values.amenities.length > 0) body.amenities = values.amenities;
 
     try {
       const res = await fetch("/api/listings/manual", {
@@ -294,6 +306,15 @@ export default function ManualListingForm() {
               <span className="text-zinc-400">
                 http {preview.debug.httpStatus} &middot; {preview.debug.htmlCharsParsed?.toLocaleString()} chars &middot; {preview.debug.extractorsUsed?.join(", ")}
               </span>
+            )}
+            {preview.fields.amenities && preview.fields.amenities.length > 0 && (
+              <div className="mt-0.5 flex flex-wrap gap-1">
+                {preview.fields.amenities.map((a) => (
+                  <span key={a} className="bg-zinc-100 border border-zinc-300 px-1.5 py-0.5 rounded text-zinc-600">
+                    {a}
+                  </span>
+                ))}
+              </div>
             )}
           </div>
         )}

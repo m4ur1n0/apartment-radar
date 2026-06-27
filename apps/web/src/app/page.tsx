@@ -51,6 +51,7 @@ type Listing = {
   created_at: string;
   updated_at: string;
   subway_estimates: SubwayEstimate[];
+  amenities: string[];
 };
 
 function urgencyLabel(score: number): string {
@@ -226,6 +227,16 @@ export default async function Home() {
                   <p className="text-sm text-zinc-400 mb-3 line-clamp-3">
                     {l.description}
                   </p>
+                )}
+
+                {l.amenities && l.amenities.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-3">
+                    {l.amenities.slice(0, 6).map((a) => (
+                      <span key={a} className="text-xs bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded">
+                        {a}
+                      </span>
+                    ))}
+                  </div>
                 )}
 
                 <div className="flex gap-4 text-xs pt-3 border-t border-zinc-800">

@@ -59,6 +59,7 @@ const ManualListingSchema = z.object({
   pets: z.string().optional(),
   floor_number: z.number().int().optional(),
   elevator: z.boolean().optional(),
+  amenities: z.array(z.string()).optional(),
 });
 
 const RatingSchema = z.object({
@@ -252,10 +253,17 @@ app.get("/listings", async (c) => {
     }
   }
 
-  const enriched = listings.map((l) => ({
-    ...l,
-    subway_estimates: estimatesByListing[l.id as string] ?? [],
-  }));
+  const enriched = listings.map((l) => {
+    let amenities: string[] = [];
+    try {
+      if (l.amenities_json) amenities = JSON.parse(l.amenities_json as string) as string[];
+    } catch { /* ignore malformed */ }
+    return {
+      ...l,
+      amenities,
+      subway_estimates: estimatesByListing[l.id as string] ?? [],
+    };
+  });
 
   return c.json({ listings: enriched });
 });
@@ -331,6 +339,8 @@ app.post("/listings/manual", requireAdmin, async (c) => {
   const scores = calcScores(enrichedD);
   const id = crypto.randomUUID();
 
+  const amenitiesJson = d.amenities?.length ? JSON.stringify(d.amenities) : null;
+
   await c.env.DB.prepare(
     `insert into listings (
       id, canonical_url, source, source_listing_id, title, description,
@@ -339,6 +349,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       nearest_subway_station, nearest_subway_lines, subway_walk_minutes, manhattan_commute_minutes,
       subway_walk_source, subway_walk_confidence, google_maps_directions_url,
       fee_status, laundry, dishwasher, outdoor_space, pets, floor_number, elevator,
+      amenities_json,
       fit_score, deal_score, urgency_score, risk_score
     ) values (
       ?, ?, ?, ?, ?, ?,
@@ -347,6 +358,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       ?, ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?, ?, ?, ?, ?,
+      ?,
       ?, ?, ?, ?
     )
     on conflict(canonical_url) do update set
@@ -378,6 +390,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       pets = excluded.pets,
       floor_number = excluded.floor_number,
       elevator = excluded.elevator,
+      amenities_json = excluded.amenities_json,
       fit_score = excluded.fit_score,
       deal_score = excluded.deal_score,
       urgency_score = excluded.urgency_score,
@@ -392,6 +405,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       subwayStation, subwayLines, subwayWalk, d.manhattan_commute_minutes ?? null,
       subwayWalkSource, subwayWalkConfidence, mapsUrl,
       d.fee_status ?? null, d.laundry ?? null, boolToInt(d.dishwasher), boolToInt(d.outdoor_space), d.pets ?? null, d.floor_number ?? null, boolToInt(d.elevator),
+      amenitiesJson,
       scores.fit_score, scores.deal_score, scores.urgency_score, scores.risk_score
     )
     .run();

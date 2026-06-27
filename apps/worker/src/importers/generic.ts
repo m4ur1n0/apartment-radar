@@ -1,5 +1,7 @@
 import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, ImportSource } from "./types";
 import { extractZillowFields } from "./zillow";
+import { extractNooklynFields } from "./nooklyn";
+import { extractStreetEasyFields } from "./streeteasy";
 
 const MAX_BYTES = 500_000;
 const HEAD_BUDGET = 60_000;
@@ -217,15 +219,14 @@ function extractCoordsFromText(html: string): { lat?: number; lng?: number } {
 }
 
 function calcConfidence(fields: ExtractedFields, source: ImportSource): Confidence {
-  if (source === "zillow") {
-    const coreCount = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
-    const hasLocation = fields.address_text != null || fields.neighborhood != null;
+  const coreCount = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
+  const hasLocation = fields.address_text != null || fields.neighborhood != null;
+  if (source === "zillow" || source === "nooklyn") {
     if (coreCount >= 3 && hasLocation) return "high";
     if (fields.rent != null && (coreCount + (hasLocation ? 1 : 0)) >= 3) return "medium";
     return coreCount >= 1 ? "medium" : "low";
   }
-  const found = [fields.rent, fields.beds, fields.baths].filter((v) => v != null).length;
-  return found >= 3 ? "high" : found >= 1 ? "medium" : "low";
+  return coreCount >= 3 ? "high" : coreCount >= 1 ? "medium" : "low";
 }
 
 interface FetchResult {
@@ -326,6 +327,10 @@ interface ParsedHtml {
     zillowJsonScriptsFound: number;
     zillowPropertyCardsFound: number;
   };
+  nooklynDebug?: {
+    nooklynDetailSignalsFound: number;
+    amenitiesFoundCount: number;
+  };
 }
 
 function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHtml {
@@ -333,16 +338,32 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHt
   const allWarnings: string[] = [];
   const extractorsUsed: string[] = [];
   let zillowDebug: ParsedHtml["zillowDebug"];
+  let nooklynDebug: ParsedHtml["nooklynDebug"];
   const stripped = stripHtml(html);
   const textSample = stripped.slice(0, 300);
 
-  // zillow-specific parsers run first, filling fields before generic
+  // source-specific parsers run first, filling fields before generic fallbacks
   if (source === "zillow") {
     const zr = extractZillowFields({ url: rawUrl, html });
     Object.assign(fields, zr.fields);
     allWarnings.push(...zr.warnings);
     extractorsUsed.push(...zr.extractorsUsed);
     zillowDebug = zr.debug;
+  }
+
+  if (source === "nooklyn") {
+    const nr = extractNooklynFields({ url: rawUrl, html });
+    Object.assign(fields, nr.fields);
+    allWarnings.push(...nr.warnings);
+    extractorsUsed.push(...nr.extractorsUsed);
+    nooklynDebug = nr.debug;
+  }
+
+  if (source === "streeteasy") {
+    const sr = extractStreetEasyFields({ url: rawUrl, html });
+    Object.assign(fields, sr.fields);
+    allWarnings.push(...sr.warnings);
+    extractorsUsed.push(...sr.extractorsUsed);
   }
 
   // generic extraction fills whatever is still missing
@@ -464,6 +485,7 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHt
     extractorsUsed,
     textSample,
     zillowDebug,
+    nooklynDebug,
   };
 }
 
@@ -507,7 +529,7 @@ export async function genericExtract(
     };
   }
 
-  const { fields, warnings, confidence, extractorsUsed, textSample, zillowDebug } = parseHtml(html, rawUrl, source);
+  const { fields, warnings, confidence, extractorsUsed, textSample, zillowDebug, nooklynDebug } = parseHtml(html, rawUrl, source);
   return {
     url: rawUrl, source, confidence, fetchMode,
     fields,
@@ -519,6 +541,8 @@ export async function genericExtract(
       zillowDetailSignalsFound: zillowDebug?.zillowDetailSignalsFound,
       zillowJsonScriptsFound: zillowDebug?.zillowJsonScriptsFound,
       zillowPropertyCardsFound: zillowDebug?.zillowPropertyCardsFound,
+      nooklynDetailSignalsFound: nooklynDebug?.nooklynDetailSignalsFound,
+      amenitiesFoundCount: nooklynDebug?.amenitiesFoundCount,
       textSample,
     },
   };
