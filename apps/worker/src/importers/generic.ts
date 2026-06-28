@@ -748,7 +748,7 @@ export async function genericExtract(
   let nooklynApiStatus: number | undefined;
   let nooklynApiFieldsFound = 0;
   let nooklynDirectFallbackUsed = false;
-  let nooklynScraperApiFallbackUsed = false;
+  let nooklynProxyFallbackUsed = false;
   let streeteasyDirectAttempted = false;
   let streeteasyDirectProfilesTried: ProfileAttempt[] | undefined;
   let streeteasyDirectProfileUsed: string | undefined;
