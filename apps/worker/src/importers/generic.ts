@@ -2,7 +2,8 @@ import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, Impor
 import { extractZillowFields } from "./zillow";
 import { extractNooklynFields, extractSlugFromNooklynUrl, fetchNooklynApi } from "./nooklyn";
 import { extractStreetEasyFields } from "./streeteasy";
-import { extractImageUrlsFromHtml, dedupeImages, dedupeUrls } from "./images";
+import { extractImages, dedupeUrls } from "./images";
+import type { ImageExtractionDiagnostics } from "./images";
 
 const MAX_BYTES = 500_000;
 const HEAD_BUDGET = 60_000;
@@ -534,6 +535,7 @@ interface ParsedHtml {
   extractorsUsed: string[];
   textSample: string;
   strippedText?: string;
+  imageDiag?: ImageExtractionDiagnostics;
   zillowDebug?: {
     zillowDetailSignalsFound: number;
     zillowJsonScriptsFound: number;
@@ -690,8 +692,8 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource, parseOpts
   }
 
   // generic image extraction: run for all sources, merge with any already found
-  const htmlImgs = extractImageUrlsFromHtml(html, rawUrl);
-  const htmlImgUrls = dedupeImages(htmlImgs).map((i) => i.url);
+  const { images: htmlImgs, diagnostics: imgDiag } = extractImages(html, rawUrl);
+  const htmlImgUrls = htmlImgs.map((i) => i.url);
   const mergedImgUrls = dedupeUrls([...(fields.image_urls ?? []), ...htmlImgUrls]);
   if (mergedImgUrls.length > 0) {
     fields.image_urls = mergedImgUrls.slice(0, 20);
@@ -715,6 +717,7 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource, parseOpts
     extractorsUsed,
     textSample,
     strippedText: parseOpts.includeText ? stripped : undefined,
+    imageDiag: imgDiag,
     zillowDebug,
     nooklynDebug,
     streeteasyDebug,
@@ -889,11 +892,18 @@ export async function genericExtract(
     ? extractDebugSnippets(parsed.strippedText)
     : undefined;
 
+  const imgDiag = parsed.imageDiag;
+  const imageUrlsReturned = parsed.fields.image_urls?.length ?? 0;
+  const allWarnings = [...fetchWarnings, ...parsed.warnings];
+  if (imgDiag && imgDiag.candidatesFound > 0 && imageUrlsReturned === 0) {
+    allWarnings.push("image candidates found but all rejected");
+  }
+
   const confidence = calcConfidence(parsed.fields, source);
   return {
     url: rawUrl, source, confidence, fetchMode,
     fields: parsed.fields,
-    warnings: [...fetchWarnings, ...parsed.warnings],
+    warnings: allWarnings,
     debug: {
       httpStatus,
       htmlCharsParsed: html.length,
@@ -924,7 +934,12 @@ export async function genericExtract(
       streeteasyNextScriptsFound,
       debugSnippets,
       textSample: parsed.textSample,
-      imageUrlsFound: parsed.fields.image_urls?.length ?? 0,
+      imageUrlsFound: imageUrlsReturned,
+      imageCandidatesFound: imgDiag?.candidatesFound,
+      imageCandidatesAfterBasicFilter: imgDiag ? imgDiag.candidatesFound - imgDiag.filteredCount : undefined,
+      imageUrlsReturned,
+      imageRejectReasons: imgDiag?.rejectReasons,
+      imageExtractionSources: imgDiag?.sources,
     },
   };
 }

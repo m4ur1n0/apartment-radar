@@ -81,6 +81,11 @@ export interface ImportPreviewResult {
     debugSnippets?: Record<string, string>;
     textSample?: string;
     imageUrlsFound?: number;
+    imageCandidatesFound?: number;
+    imageCandidatesAfterBasicFilter?: number;
+    imageUrlsReturned?: number;
+    imageRejectReasons?: Record<string, number>;
+    imageExtractionSources?: string[];
     imageExtractorsUsed?: string[];
   };
 }
