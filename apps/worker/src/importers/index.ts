@@ -4,9 +4,9 @@ import { genericExtract } from "./generic";
 
 export async function importPreview(
   url: string,
-  options: { fetchMode?: FetchMode; scraperApiKey?: string } = {}
+  options: { fetchMode?: FetchMode; scraperApiKey?: string; debugText?: boolean; debugFetchProfiles?: boolean } = {}
 ): Promise<ImportPreviewResult> {
-  const { fetchMode = "direct", scraperApiKey } = options;
+  const { fetchMode = "direct", scraperApiKey, debugText, debugFetchProfiles } = options;
 
   let parsedUrl: URL;
   try {
@@ -16,5 +16,5 @@ export async function importPreview(
   }
 
   const source = detectSource(parsedUrl.hostname);
-  return genericExtract(url, source, fetchMode, scraperApiKey);
+  return genericExtract(url, source, fetchMode, scraperApiKey, { debugText, debugFetchProfiles });
 }

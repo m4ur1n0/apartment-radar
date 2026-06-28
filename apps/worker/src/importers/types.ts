@@ -37,6 +37,7 @@ export interface ExtractedFields {
   dishwasher?: boolean;
   outdoor_space?: boolean;
   elevator?: boolean;
+  floor_number?: number;
   pets?: string;
   amenities?: string[];
 }
@@ -52,11 +53,31 @@ export interface ImportPreviewResult {
     httpStatus?: number;
     htmlCharsParsed?: number;
     extractorsUsed: string[];
+    fetchModeActuallyUsed?: string;
     zillowDetailSignalsFound?: number;
     zillowJsonScriptsFound?: number;
     zillowPropertyCardsFound?: number;
     nooklynDetailSignalsFound?: number;
     amenitiesFoundCount?: number;
+    nooklynTransitText?: string;
+    nooklynApiAttempted?: boolean;
+    nooklynApiSucceeded?: boolean;
+    nooklynApiStatus?: number;
+    nooklynApiFieldsFound?: number;
+    nooklynDirectFallbackUsed?: boolean;
+    nooklynScraperApiFallbackUsed?: boolean;
+    streeteasyJsonLdScriptsFound?: number;
+    streeteasyEmbeddedJsonCandidatesFound?: number;
+    streeteasyBlockedSignalsFound?: number;
+    streeteasyDirectAttempted?: boolean;
+    streeteasyDirectProfilesTried?: Array<{ name: string; status?: number; bytes?: number; blocked: boolean; signals: number }>;
+    streeteasyDirectProfileUsed?: string;
+    streeteasyDirectStatus?: number;
+    streeteasyDirectBlocked?: boolean;
+    streeteasyRealPageSignalsFound?: string[];
+    streeteasyScraperApiFallbackUsed?: boolean;
+    streeteasyNextScriptsFound?: number;
+    debugSnippets?: Record<string, string>;
     textSample?: string;
   };
 }

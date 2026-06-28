@@ -316,9 +316,19 @@ app.post("/listings/manual", requireAdmin, async (c) => {
 
   const d = parsed.data;
 
-  // enrich subway proximity from coordinates if user didn't provide subway fields
+  // resolve coordinates: use provided values or geocode from address
+  let resolvedLat = d.latitude ?? null;
+  let resolvedLng = d.longitude ?? null;
+  if ((resolvedLat == null || resolvedLng == null) && d.address_text) {
+    const geo = await geocodeAddress(d.address_text);
+    if (geo) {
+      resolvedLat = geo.latitude;
+      resolvedLng = geo.longitude;
+    }
+  }
+
   const enrichment = enrichListingLocation(
-    { latitude: d.latitude, longitude: d.longitude, address_text: d.address_text },
+    { latitude: resolvedLat ?? undefined, longitude: resolvedLng ?? undefined },
     SUBWAY_STATIONS
   );
 
@@ -400,7 +410,7 @@ app.post("/listings/manual", requireAdmin, async (c) => {
   )
     .bind(
       id, d.canonical_url, d.source, d.source_listing_id ?? null, d.title ?? null, d.description ?? null,
-      d.address_text ?? null, d.neighborhood ?? null, d.borough, d.latitude ?? null, d.longitude ?? null,
+      d.address_text ?? null, d.neighborhood ?? null, d.borough, resolvedLat, resolvedLng,
       d.rent, d.beds, d.baths, d.sqft ?? null, d.available_date ?? null,
       subwayStation, subwayLines, subwayWalk, d.manhattan_commute_minutes ?? null,
       subwayWalkSource, subwayWalkConfidence, mapsUrl,
@@ -474,6 +484,8 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
     .object({
       url: z.string().url(),
       fetchMode: z.enum(["direct", "scraperapi"]).optional().default("direct"),
+      debugText: z.boolean().optional().default(false),
+      debugFetchProfiles: z.boolean().optional().default(false),
     })
     .safeParse(body);
 
@@ -481,7 +493,7 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
     return c.json({ error: "url required" }, 400);
   }
 
-  const { url, fetchMode } = parsed.data;
+  const { url, fetchMode, debugText, debugFetchProfiles } = parsed.data;
 
   if (fetchMode === "scraperapi" && !c.env.SCRAPERAPI_KEY) {
     return c.json({ error: "missing_scraperapi_key" }, 500);
@@ -490,9 +502,11 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
   const result = await importPreview(url, {
     fetchMode,
     scraperApiKey: c.env.SCRAPERAPI_KEY,
+    debugText,
+    debugFetchProfiles,
   });
 
-  // if no coordinates from scrape, try geocoding the address
+  // geocode from address if no coords extracted from scrape
   if ((!result.fields.latitude || !result.fields.longitude) && result.fields.address_text) {
     const geo = await geocodeAddress(result.fields.address_text);
     if (geo) {
@@ -502,12 +516,8 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
     }
   }
 
-  // auto-enrich subway proximity if coordinates available but subway fields are missing
-  if (
-    result.fields.latitude &&
-    result.fields.longitude &&
-    !result.fields.nearest_subway_station
-  ) {
+  // always compute subway proximity from our own data when coords are available
+  if (result.fields.latitude && result.fields.longitude) {
     const enrichment = enrichListingLocation(
       { latitude: result.fields.latitude, longitude: result.fields.longitude },
       SUBWAY_STATIONS

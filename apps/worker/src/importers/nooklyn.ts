@@ -1,4 +1,166 @@
 import type { ExtractedFields } from "./types";
+import { amenitiesFromSection, deriveAmenityFields, matchAmenityPhrases } from "./amenities";
+
+const NOOKLYN_API_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+export interface NooklynApiResult {
+  fields: ExtractedFields;
+  amenities: string[];
+  warnings: string[];
+  usable: boolean;
+  httpStatus?: number;
+  fieldsFound: number;
+}
+
+export function extractSlugFromNooklynUrl(url: string): string | null {
+  try {
+    const m = new URL(url).pathname.match(/\/listings?\/([\w-]+)/i);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchNooklynApi(slug: string, referer: string): Promise<NooklynApiResult> {
+  const warnings: string[] = ["nooklyn api parser used"];
+  const apiUrl = `https://nooklyn.com/api/v2/listings.fetch?slug=${encodeURIComponent(slug)}`;
+
+  let httpStatus: number | undefined;
+  let raw: unknown;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const resp = await fetch(apiUrl, {
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent": NOOKLYN_API_UA,
+        Referer: referer,
+        Origin: "https://nooklyn.com",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      signal: controller.signal,
+    });
+    httpStatus = resp.status;
+    if (!resp.ok) {
+      warnings.push(`nooklyn api http ${resp.status}`);
+      return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0 };
+    }
+    raw = await resp.json();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warnings.push(`nooklyn api fetch error: ${msg}`);
+    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0 };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  if (!obj) {
+    warnings.push("nooklyn api: non-object response");
+    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0 };
+  }
+
+  // response may be { listing: {...} } or the listing object directly
+  const listing =
+    "listing" in obj && obj.listing && typeof obj.listing === "object"
+      ? (obj.listing as Record<string, unknown>)
+      : obj;
+
+  const fields: ExtractedFields = {};
+  let fieldsFound = 0;
+
+  if (listing.id != null) fields.source_listing_id = String(listing.id);
+
+  if (typeof listing.price === "number" && listing.price > 0) {
+    const rent = Math.round(listing.price / 100);
+    if (rent >= 500 && rent <= 15_000) { fields.rent = rent; fieldsFound++; }
+  }
+
+  if (typeof listing.bedrooms === "number" && listing.bedrooms >= 0 && listing.bedrooms <= 10) {
+    fields.beds = listing.bedrooms; fieldsFound++;
+  }
+
+  if (typeof listing.bathrooms === "number" && listing.bathrooms >= 0 && listing.bathrooms <= 10) {
+    fields.baths = listing.bathrooms; fieldsFound++;
+  } else if (typeof listing.full_baths === "number") {
+    const half = typeof listing.half_baths === "number" ? listing.half_baths : 0;
+    const baths = listing.full_baths + 0.5 * half;
+    if (baths >= 0 && baths <= 10) { fields.baths = baths; fieldsFound++; }
+  }
+
+  if (typeof listing.square_feet === "number" && listing.square_feet >= 200 && listing.square_feet <= 10_000) {
+    fields.sqft = listing.square_feet; fieldsFound++;
+  }
+
+  if (typeof listing.address === "string" && listing.address.trim()) {
+    fields.address_text = listing.address.trim(); fieldsFound++;
+  }
+
+  const neigh = listing.neighborhood;
+  if (neigh && typeof neigh === "object" && typeof (neigh as Record<string, unknown>).name === "string") {
+    fields.neighborhood = ((neigh as Record<string, unknown>).name as string).trim(); fieldsFound++;
+  } else if (typeof neigh === "string" && neigh.trim()) {
+    fields.neighborhood = neigh.trim(); fieldsFound++;
+  }
+
+  if (typeof listing.description === "string" && listing.description.trim()) {
+    fields.description = listing.description.trim();
+  }
+
+  if (typeof listing.latitude === "number" && typeof listing.longitude === "number") {
+    const lat = listing.latitude, lng = listing.longitude;
+    if (lat >= 40.0 && lat <= 41.5 && lng >= -75.0 && lng <= -73.0) {
+      fields.latitude = lat; fields.longitude = lng; fieldsFound++;
+    }
+  }
+
+  // listing-claimed transit (our enrichment from coords can still override later)
+  if (typeof listing.station === "string" && listing.station.trim()) {
+    fields.nearest_subway_station = listing.station.trim();
+  }
+  if (typeof listing.subway_line === "string" && listing.subway_line.trim()) {
+    fields.nearest_subway_lines = listing.subway_line.trim();
+  }
+
+  if (typeof listing.pets === "string") {
+    const p = listing.pets.toLowerCase();
+    if (p.includes("no") || p === "false") fields.pets = "no pets";
+    else if (p.length > 0) fields.pets = "allowed";
+  }
+
+  if (typeof listing.date_available === "string" && listing.date_available.trim()) {
+    fields.available_date = listing.date_available.trim();
+  }
+
+  if (listing.no_fee === true) fields.fee_status = "no fee";
+
+  // amenities: string with newline separators or array
+  let rawAmenities: string[] = [];
+  if (typeof listing.amenities === "string") {
+    rawAmenities = listing.amenities
+      .split(/[\r\n]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  } else if (Array.isArray(listing.amenities)) {
+    rawAmenities = (listing.amenities as unknown[])
+      .filter((a) => typeof a === "string")
+      .map((a) => (a as string).trim().toLowerCase());
+  }
+
+  const amenities = matchAmenityPhrases(rawAmenities);
+  deriveAmenityFields(amenities, fields);
+  fields.amenities = amenities;
+
+  const usable =
+    fields.rent != null ||
+    ((fields.beds != null || fields.baths != null) && (fields.address_text != null || fields.neighborhood != null));
+
+  warnings.push(usable ? "nooklyn api fetch succeeded" : "nooklyn api response unusable");
+
+  return { fields, amenities, warnings, usable, httpStatus, fieldsFound };
+}
 
 function toText(html: string): string {
   return html
@@ -16,75 +178,6 @@ function toText(html: string): string {
     .trim();
 }
 
-// ordered specific → general to prefer longer matches
-const AMENITY_PHRASES = [
-  "in-unit laundry",
-  "washer/dryer in unit",
-  "w/d in unit",
-  "laundry in building",
-  "laundry in basement",
-  "common laundry",
-  "coin-operated laundry",
-  "dishwasher",
-  "microwave",
-  "stainless steel appliances",
-  "hardwood floors",
-  "high ceilings",
-  "exposed brick",
-  "pre-war",
-  "renovated",
-  "central air",
-  "air conditioning",
-  "elevator",
-  "doorman",
-  "virtual doorman",
-  "video intercom",
-  "live-in super",
-  "concierge",
-  "gym",
-  "fitness center",
-  "roof deck",
-  "rooftop",
-  "balcony",
-  "patio",
-  "backyard",
-  "outdoor space",
-  "bike storage",
-  "storage",
-  "package room",
-  "pets allowed",
-  "cats allowed",
-  "dogs allowed",
-  "cat friendly",
-  "dog friendly",
-  "cats ok",
-  "dogs ok",
-  "no pets",
-  "guarantors accepted",
-  "no fee",
-  "broker fee",
-];
-
-// canonical display forms for common aliases
-function normalizeAmenity(phrase: string): string {
-  const aliases: Record<string, string> = {
-    "washer/dryer in unit": "in-unit laundry",
-    "w/d in unit": "in-unit laundry",
-    "laundry in basement": "laundry in building",
-    "common laundry": "laundry in building",
-    "coin-operated laundry": "laundry in building",
-    "fitness center": "gym",
-    "rooftop": "roof deck",
-    "cats allowed": "cat friendly",
-    "dogs allowed": "dog friendly",
-    "cats ok": "cat friendly",
-    "dogs ok": "dog friendly",
-    "stainless steel appliances": "stainless appliances",
-  };
-  return aliases[phrase] ?? phrase;
-}
-
-// extract amenities from json-ld amenityFeature arrays
 function amenitiesFromJsonLd(html: string): string[] {
   const out: string[] = [];
   const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
@@ -106,7 +199,6 @@ function amenitiesFromJsonLd(html: string): string[] {
   return out;
 }
 
-// extract amenities from script blobs: "amenities":["Dishwasher","..."]
 function amenitiesFromScripts(html: string): string[] {
   const out: string[] = [];
   const re = /"(?:amenities|amenityList|features)"\s*:\s*\[([^\]]{0,2000})\]/gi;
@@ -114,45 +206,34 @@ function amenitiesFromScripts(html: string): string[] {
   while ((m = re.exec(html)) !== null) {
     const items = m[1].match(/"([^"]{2,80})"/g);
     if (items) {
-      for (const item of items) {
-        out.push(item.replace(/"/g, "").toLowerCase().trim());
-      }
+      for (const item of items) out.push(item.replace(/"/g, "").toLowerCase().trim());
     }
   }
   return out;
 }
 
-// find amenity phrases scoped to a visible "Amenities" section in the stripped text
-function amenitiesFromSection(text: string): string[] {
+// extract nearest subway station from rendered transit section
+// visible text pattern: "Morgan Av 0.30 mi Flushing Av 0.33 mi"
+function extractTransit(text: string): string | undefined {
   const lower = text.toLowerCase();
-  const idx = lower.search(
-    /\bamenities\b|\bapartment\s+amenities\b|\bbuilding\s+amenities\b|\bbuilding\s+features\b|\bapartment\s+features\b/
-  );
-  if (idx === -1) return [];
+  // find the subway section (after "subway" heading in the Transportation section)
+  const subwayIdx = lower.search(/\btransportation\b|\bsubway\b/);
+  if (subwayIdx === -1) return undefined;
 
-  // scan up to 1500 chars after the heading
-  const section = lower.slice(idx, idx + 1500);
-  const found: string[] = [];
-  for (const phrase of AMENITY_PHRASES) {
-    if (section.includes(phrase)) {
-      const canonical = normalizeAmenity(phrase);
-      if (!found.includes(canonical)) found.push(canonical);
+  const section = text.slice(subwayIdx, subwayIdx + 1200);
+  // match "StationName Av/St X.XX mi" — station names don't start with B followed by digits (bus lines)
+  const stationRe = /(?:^|(?:mi\s+))(?!B\d)([A-Z][a-zA-Z-]+(?:\s+[A-Z][a-zA-Z-]+)*\s+(?:Av|Ave|St|Street|Avs|Avenue|Blvd|Pl|Sq|Pkwy))\s+([\d.]+)\s*mi/g;
+  let m;
+  let nearest: string | undefined;
+  let nearestDist = Infinity;
+  while ((m = stationRe.exec(section)) !== null) {
+    const dist = parseFloat(m[2]);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = `${m[1].trim()} (${dist} mi)`;
     }
   }
-  return found;
-}
-
-function matchAmenityPhrases(raw: string[]): string[] {
-  const out = new Set<string>();
-  for (const a of raw) {
-    for (const phrase of AMENITY_PHRASES) {
-      if (a.includes(phrase) || phrase === a) {
-        out.add(normalizeAmenity(phrase));
-        break;
-      }
-    }
-  }
-  return [...out];
+  return nearest;
 }
 
 export interface NooklynExtractResult {
@@ -163,6 +244,7 @@ export interface NooklynExtractResult {
   debug: {
     nooklynDetailSignalsFound: number;
     amenitiesFoundCount: number;
+    nooklynTransitText?: string;
   };
 }
 
@@ -173,12 +255,12 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
   const warnings: string[] = ["nooklyn parser used"];
   let signals = 0;
 
-  // source_listing_id from URL: /listings/12345 or /listings/12345-slug
-  const idM = url.match(/\/listings?\/(\d+)/i);
+  // source_listing_id from URL: /listings/12345 or UUID-style slug
+  const idM = url.match(/\/listings?\/([\w-]+)/i);
   if (idM) fields.source_listing_id = idM[1];
 
   // --- rent ---
-  // Nooklyn shows "$3,000/Month" (capital M) or "$3,000 / Month"
+  // rendered text shows "$3,042/Month" (capital M, no space)
   const rentPatterns = [
     /\$\s*([\d,]+)\s*\/\s*Month/i,
     /\$\s*([\d,]+)\s*\/\s*mo(?:nth)?/i,
@@ -190,7 +272,7 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
       if (v >= 500 && v <= 15_000) { fields.rent = v; signals++; break; }
     }
   }
-  // html class-based fallback: class contains "price" and has $DIGITS nearby
+  // html class-based fallback: class contains "price"
   if (!fields.rent) {
     const priceClassM = html.match(/class="[^"]*[Pp]rice[^"]*"[^>]*>\s*\$\s*([\d,]+)/);
     if (priceClassM) {
@@ -198,32 +280,44 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
       if (v >= 500 && v <= 15_000) { fields.rent = v; signals++; }
     }
   }
-  // json-ld price
+  // json embedded price
   if (!fields.rent) {
-    const priceJsonM = html.match(/"(?:price|listingPrice|rent)"\s*:\s*(\d+)/);
-    if (priceJsonM) {
-      const v = parseInt(priceJsonM[1], 10);
+    const jsonPriceM = html.match(/"(?:price|listingPrice|rent)"\s*:\s*(\d+)/);
+    if (jsonPriceM) {
+      const v = parseInt(jsonPriceM[1], 10);
       if (v >= 500 && v <= 15_000) { fields.rent = v; signals++; }
     }
   }
-  if (!fields.rent) warnings.push("nooklyn rent not found");
+  if (fields.rent) {
+    warnings.push("nooklyn rent found");
+  } else {
+    warnings.push("nooklyn rent not found");
+  }
 
-  // --- beds ---
+  // --- beds/baths ---
+  // standard patterns
   const bedsM =
     text.match(/(\d+)\s+[Bb]ed(?:room)?s?\b/) ??
     text.match(/[Bb]ed(?:room)?s?:\s*(\d+)/) ??
-    text.match(/(\d+)\s*BR\b/i) ??
-    text.match(/"bedrooms?"\s*:\s*(\d+)/i);
+    text.match(/(\d+)\s*BR\b/i);
   if (bedsM) {
     const v = parseInt(bedsM[1], 10);
     if (v >= 0 && v <= 10) { fields.beds = v; signals++; }
   }
+  // nooklyn rendered UI shows "Unit 203 2 1 115 Stanwix St" — bare bed/bath numbers after unit
+  if (fields.beds == null) {
+    const unitM = text.match(/Unit\s+[\w-]+\s+(\d+)\s+(\d+)\s+\d/);
+    if (unitM) {
+      const b = parseInt(unitM[1], 10);
+      const ba = parseInt(unitM[2], 10);
+      if (b >= 0 && b <= 10) { fields.beds = b; signals++; }
+      if (fields.baths == null && ba >= 0 && ba <= 10) { fields.baths = ba; signals++; }
+    }
+  }
 
-  // --- baths ---
   const bathsM =
     text.match(/([\d.]+)\s+[Bb]ath(?:room)?s?\b/) ??
-    text.match(/[Bb]ath(?:room)?s?:\s*([\d.]+)/) ??
-    text.match(/"bathrooms?"\s*:\s*([\d.]+)/i);
+    text.match(/[Bb]ath(?:room)?s?:\s*([\d.]+)/);
   if (bathsM) {
     const v = parseFloat(bathsM[1]);
     if (v >= 0 && v <= 10) { fields.baths = v; signals++; }
@@ -232,17 +326,36 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
   // --- sqft ---
   const sqftM =
     text.match(/([\d,]+)\s*sq\.?\s*ft\.?/i) ??
-    text.match(/([\d,]+)\s*sqft/i) ??
-    text.match(/"(?:squareFeet|sqft|livingArea)"\s*:\s*(\d+)/i);
+    text.match(/([\d,]+)\s*sqft/i);
   if (sqftM) {
     const v = parseInt(sqftM[1].replace(/,/g, ""), 10);
     if (v >= 200 && v <= 10_000) { fields.sqft = v; signals++; }
   }
 
-  // --- address ---
+  // --- address + neighborhood ---
+  // json-ld
   const jsonLdAddrM = html.match(/"streetAddress"\s*:\s*"([^"]{5,120})"/);
   if (jsonLdAddrM) { fields.address_text = jsonLdAddrM[1]; signals++; }
 
+  // breadcrumb: "Neighborhood / 123 Street St, Brooklyn, NY / Unit X"
+  // rendered visible text shows: "Bushwick / 115 Stanwix St, Brooklyn, NY 11206, USA / Unit 203"
+  if (!fields.neighborhood || !fields.address_text) {
+    const crumbM = text.match(/([A-Z][a-zA-Z\s-]{2,30})\s*\/\s*(\d+[^/,]+(?:St|Ave|Rd|Ln|Blvd|Dr|Pl|Ct|Ter|Pkwy)[^/,]*)/i);
+    if (crumbM) {
+      const neighCandidate = crumbM[1].trim();
+      const addrCandidate = crumbM[2].split(",")[0].trim(); // just the street part
+      if (!fields.neighborhood && neighCandidate.length >= 3 && neighCandidate.length <= 40) {
+        fields.neighborhood = neighCandidate;
+        signals++;
+      }
+      if (!fields.address_text && addrCandidate.length >= 5) {
+        fields.address_text = addrCandidate;
+        signals++;
+      }
+    }
+  }
+
+  // h1 fallback for address
   if (!fields.address_text) {
     const h1M = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
     if (h1M) {
@@ -251,22 +364,14 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
     }
   }
 
-  // --- neighborhood ---
-  const neighM =
-    text.match(/[Nn]eighborhood:\s*([A-Za-z][^\n,|.<>]{2,30})/) ??
-    text.match(/"neighborhood"\s*:\s*"([^"]{2,40})"/) ??
-    text.match(/[Ii]n\s+([A-Z][a-z]+(?:[\s-][A-Z][a-z]+)?),\s*(?:Brooklyn|Queens|Manhattan|Bronx|Staten Island)/);
-  if (neighM) {
-    const raw = neighM[1].trim();
-    if (raw.length >= 2 && raw.length <= 40) { fields.neighborhood = raw; signals++; }
-  }
-
-  // neighborhood from url slug as fallback: /listings/123-bushwick-brooklyn
+  // neighborhood from text
   if (!fields.neighborhood) {
-    const urlSlugM = url.match(/\/listings\/\d+-([a-z]+(?:-[a-z]+)*?)(?:-brooklyn|-queens|-manhattan|-bronx|-staten-island)?(?:\/|$)/i);
-    if (urlSlugM) {
-      const slug = urlSlugM[1].replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-      if (slug.length >= 3 && slug.length <= 40) fields.neighborhood = slug;
+    const neighM =
+      text.match(/[Nn]eighborhood:\s*([A-Za-z][^\n,|.<>]{2,30})/) ??
+      text.match(/"neighborhood"\s*:\s*"([^"]{2,40})"/);
+    if (neighM) {
+      const raw = neighM[1].trim();
+      if (raw.length >= 2 && raw.length <= 40) { fields.neighborhood = raw; signals++; }
     }
   }
 
@@ -299,41 +404,22 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
   const rawFromJsonLd = amenitiesFromJsonLd(html);
   const rawFromScripts = amenitiesFromScripts(html);
   const fromSection = amenitiesFromSection(text);
-
-  // match structured sources against known phrases
   const fromStructured = matchAmenityPhrases([...rawFromJsonLd, ...rawFromScripts]);
 
-  // merge, dedupe
   const amenitySet = new Set([...fromStructured, ...fromSection]);
   const amenities = [...amenitySet];
 
   if (amenities.length > 0) {
-    warnings.push("nooklyn parser found amenities");
+    warnings.push("nooklyn amenities found");
   } else {
     warnings.push("nooklyn amenities not found");
   }
 
-  // derive fields from amenities
-  if (!fields.laundry) {
-    if (amenities.includes("in-unit laundry")) fields.laundry = "in-unit";
-    else if (amenities.includes("laundry in building")) fields.laundry = "in building";
-  }
-  if (!fields.dishwasher && amenities.includes("dishwasher")) fields.dishwasher = true;
-  if (!fields.outdoor_space) {
-    const outdoorTerms = ["balcony", "patio", "backyard", "roof deck", "outdoor space"];
-    if (outdoorTerms.some((t) => amenities.includes(t))) fields.outdoor_space = true;
-  }
-  if (!fields.pets) {
-    if (amenities.includes("pets allowed") || amenities.includes("cat friendly") || amenities.includes("dog friendly")) {
-      fields.pets = "allowed";
-    } else if (amenities.includes("no pets")) {
-      fields.pets = "no pets";
-    }
-  }
-  if (!fields.fee_status && amenities.includes("no fee")) fields.fee_status = "no fee";
-  if (amenities.includes("elevator")) fields.elevator = true;
-
+  deriveAmenityFields(amenities, fields);
   fields.amenities = amenities;
+
+  // --- transit (debug only — our enrichment is the authoritative source) ---
+  const transitText = extractTransit(text);
 
   return {
     fields,
@@ -343,6 +429,7 @@ export function extractNooklynFields(args: { url: string; html: string }): Nookl
     debug: {
       nooklynDetailSignalsFound: signals,
       amenitiesFoundCount: amenities.length,
+      nooklynTransitText: transitText,
     },
   };
 }

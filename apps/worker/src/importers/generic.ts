@@ -1,6 +1,6 @@
 import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, ImportSource } from "./types";
 import { extractZillowFields } from "./zillow";
-import { extractNooklynFields } from "./nooklyn";
+import { extractNooklynFields, extractSlugFromNooklynUrl, fetchNooklynApi } from "./nooklyn";
 import { extractStreetEasyFields } from "./streeteasy";
 
 const MAX_BYTES = 500_000;
@@ -26,7 +26,6 @@ function smartSlice(raw: string, maxBytes: number): string {
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// instruction set used when fetching zillow via scraperapi
 const ZILLOW_INSTRUCTION_SET = [
   {
     type: "wait_for_selector",
@@ -36,6 +35,45 @@ const ZILLOW_INSTRUCTION_SET = [
   { type: "scroll", direction: "y", value: "bottom" },
   { type: "wait", value: 5 },
 ];
+
+// nooklyn renders price/amenities client-side; wait for the pricing component
+const NOOKLYN_INSTRUCTION_SET = [
+  {
+    type: "wait_for_selector",
+    selector: { type: "css", value: "[class*='Pricing-module'], [class*='priceNew'], [class*='BuildingAmenities']" },
+    timeout: 10,
+  },
+  { type: "wait", value: 3 },
+];
+
+// streeteasy: conservative — just wait for the page title and a short settle time
+const STREETEASY_INSTRUCTION_SET = [
+  {
+    type: "wait_for_selector",
+    selector: { type: "css", value: "h1" },
+    timeout: 8,
+  },
+  { type: "wait", value: 3 },
+];
+
+function getInstructionSet(source: ImportSource): unknown[] | undefined {
+  if (source === "zillow") return ZILLOW_INSTRUCTION_SET;
+  if (source === "nooklyn") return NOOKLYN_INSTRUCTION_SET;
+  if (source === "streeteasy") return STREETEASY_INSTRUCTION_SET;
+  return undefined;
+}
+
+function extractDebugSnippets(text: string): Record<string, string> {
+  const terms = ["$", "/Month", "Amenities", "Subway", "bed", "bath", "sqft"];
+  const snippets: Record<string, string> = {};
+  for (const term of terms) {
+    const idx = text.indexOf(term);
+    if (idx !== -1) {
+      snippets[term] = text.slice(Math.max(0, idx - 80), idx + 420).replace(/\s+/g, " ").trim();
+    }
+  }
+  return snippets;
+}
 
 function isBlocked(url: URL): boolean {
   const h = url.hostname.toLowerCase();
@@ -235,6 +273,172 @@ interface FetchResult {
   warnings: string[];
 }
 
+function isStreeteasyBlockedPage(html: string): boolean {
+  if (html.length < 5000) return true;
+  const lower = html.toLowerCase();
+  if (lower.includes("px-captcha")) return true;
+  if (lower.includes("perimeterx")) return true;
+  if (/access to this page has been denied/i.test(html)) return true;
+  return false;
+}
+
+function getStreeteasyRealPageSignals(html: string): string[] {
+  const signals: string[] = [];
+  if (html.includes("__next_f")) signals.push("__next_f");
+  if (html.includes("listingId")) signals.push("listingId");
+  if (html.includes("propertyDetails")) signals.push("propertyDetails");
+  if (html.includes("geo.position")) signals.push("geo.position");
+  if (/"pricing"/.test(html)) signals.push("pricing");
+  if (/<title>[^<]*(?:in Brooklyn|in Manhattan|in Queens|in the Bronx|in Staten Island)[^<]*StreetEasy/i.test(html)) {
+    signals.push("canonical-title");
+  }
+  if (/<link[^>]+rel=["']canonical["'][^>]+href=["'][^"']*streeteasy\.com\/[^"']{5,}["']/i.test(html)) {
+    signals.push("canonical-link");
+  }
+  return signals;
+}
+
+interface ProfileAttempt {
+  name: string;
+  status?: number;
+  bytes?: number;
+  blocked: boolean;
+  signals: number;
+}
+
+interface StreetEasyFetchResult extends FetchResult {
+  profileUsed?: string;
+  blocked?: boolean;
+  realPageSignals?: string[];
+  nextScriptsFound?: number;
+  profilesTried: ProfileAttempt[];
+}
+
+function makeProfileEHeaders(): Record<string, string> {
+  const widths = [1366, 1440, 1512];
+  const heights = [700, 800, 900];
+  const w = widths[Math.floor(Math.random() * widths.length)];
+  const h = heights[Math.floor(Math.random() * heights.length)];
+  const rid = Math.random().toString(36).slice(2, 10);
+  return {
+    Accept: "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    Cookie: `last_search_tab=rentals; srp=v2; windowWidth=${w}; windowHeight=${h}; zjs_user_id=null; zjs_user_id_type=null; diagnostic_cookie=${rid}`,
+  };
+}
+
+// tries profiles A–E in order; no explicit User-Agent so the worker platform default is used.
+// harmless preference cookies only — no anti-bot, no captcha, no pxvid/pxcts.
+async function fetchStreetEasyDirect(rawUrl: string): Promise<StreetEasyFetchResult> {
+  const staticProfiles: Array<{ name: string; headers: Record<string, string> }> = [
+    {
+      name: "A",
+      headers: {
+        Accept: "*/*",
+        Cookie: "foo=bar",
+      },
+    },
+    {
+      name: "B",
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        Cookie: "last_search_tab=rentals; srp=v2; zjs_user_id=null; zjs_user_id_type=null",
+      },
+    },
+    {
+      name: "C",
+      headers: {
+        Accept: "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        Cookie: "last_search_tab=rentals; srp=v2; zjs_user_id=null; zjs_user_id_type=null; diagnostic_cookie=present",
+      },
+    },
+    {
+      name: "D",
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "max-age=0",
+        Cookie: "last_search_tab=rentals; srp=v2; windowWidth=1440; windowHeight=676; zjs_user_id=null; zjs_user_id_type=null",
+      },
+    },
+  ];
+
+  const profiles = [
+    ...staticProfiles,
+    { name: "E", headers: makeProfileEHeaders() },
+  ];
+
+  const profilesTried: ProfileAttempt[] = [];
+  let lastWarnings: string[] = ["streeteasy direct: no profile succeeded"];
+  let lastStatus: number | undefined;
+
+  for (const profile of profiles) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const resp = await fetch(rawUrl, {
+        headers: profile.headers,
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      lastStatus = resp.status;
+
+      if (resp.status === 403 || resp.status === 429) {
+        const body = await resp.text().catch(() => "");
+        profilesTried.push({ name: profile.name, status: resp.status, bytes: body.length, blocked: true, signals: 0 });
+        lastWarnings = [`streeteasy direct blocked: http ${resp.status} on profile ${profile.name}`];
+        continue;
+      }
+
+      const ct = resp.headers.get("content-type") ?? "";
+      if (!ct.includes("html")) {
+        const body = await resp.text().catch(() => "");
+        profilesTried.push({ name: profile.name, status: resp.status, bytes: body.length, blocked: true, signals: 0 });
+        lastWarnings = [`streeteasy direct: non-html response on profile ${profile.name}`];
+        continue;
+      }
+
+      const raw = await resp.text();
+      const blocked = isStreeteasyBlockedPage(raw);
+      const realPageSignals = blocked ? [] : getStreeteasyRealPageSignals(raw);
+
+      profilesTried.push({ name: profile.name, status: resp.status, bytes: raw.length, blocked: blocked || realPageSignals.length === 0, signals: realPageSignals.length });
+
+      if (blocked) {
+        lastWarnings = [`streeteasy direct: captcha/blocked page on profile ${profile.name}`];
+        continue;
+      }
+
+      if (realPageSignals.length === 0) {
+        lastWarnings = [`streeteasy direct: no real page signals on profile ${profile.name}`];
+        continue;
+      }
+
+      const nextScriptsFound = (raw.match(/__next_f/g) ?? []).length;
+      return {
+        html: smartSlice(raw, MAX_BYTES),
+        httpStatus: resp.status,
+        warnings: [],
+        profileUsed: profile.name,
+        blocked: false,
+        realPageSignals,
+        nextScriptsFound,
+        profilesTried,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      profilesTried.push({ name: profile.name, blocked: true, signals: 0 });
+      lastWarnings = [`streeteasy direct fetch error on profile ${profile.name}: ${msg}`];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return { warnings: lastWarnings, httpStatus: lastStatus, blocked: true, realPageSignals: [], profilesTried };
+}
+
 async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
@@ -275,23 +479,29 @@ async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
 async function fetchHtmlWithScraperApi(
   url: string,
   apiKey: string,
-  opts: { useInstructions?: boolean } = {}
+  opts: { source?: ImportSource; render?: boolean } = {}
 ): Promise<FetchResult> {
+  const render = opts.render ?? true;
   const scraperUrl = new URL("https://api.scraperapi.com/");
   scraperUrl.searchParams.set("url", url);
 
   const headers: Record<string, string> = {
     "x-sapi-api_key": apiKey,
-    "x-sapi-render": "true",
   };
 
-  if (opts.useInstructions) {
-    headers["x-sapi-instruction_set"] = JSON.stringify(ZILLOW_INSTRUCTION_SET);
+  if (render) {
+    headers["x-sapi-render"] = "true";
+    const instructionSet = opts.source ? getInstructionSet(opts.source) : undefined;
+    if (instructionSet) {
+      headers["x-sapi-instruction_set"] = JSON.stringify(instructionSet);
+    }
   }
 
-  // scraperapi with rendering can be slow
+  // without rendering, scraperapi is just a premium proxy — keep timeout tight.
+  // with rendering, StreetEasy in particular can take >30s (often too slow for CF workers).
+  const timeoutMs = render ? 25_000 : 18_000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(scraperUrl.toString(), {
       headers,
@@ -322,6 +532,7 @@ interface ParsedHtml {
   confidence: Confidence;
   extractorsUsed: string[];
   textSample: string;
+  strippedText?: string;
   zillowDebug?: {
     zillowDetailSignalsFound: number;
     zillowJsonScriptsFound: number;
@@ -330,15 +541,23 @@ interface ParsedHtml {
   nooklynDebug?: {
     nooklynDetailSignalsFound: number;
     amenitiesFoundCount: number;
+    nooklynTransitText?: string;
+  };
+  streeteasyDebug?: {
+    streeteasyJsonLdScriptsFound: number;
+    streeteasyEmbeddedJsonCandidatesFound: number;
+    streeteasyBlockedSignalsFound: number;
+    amenitiesFoundCount: number;
   };
 }
 
-function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHtml {
+function parseHtml(html: string, rawUrl: string, source: ImportSource, parseOpts: { includeText?: boolean } = {}): ParsedHtml {
   const fields: ExtractedFields = { canonical_url: rawUrl, source };
   const allWarnings: string[] = [];
   const extractorsUsed: string[] = [];
   let zillowDebug: ParsedHtml["zillowDebug"];
   let nooklynDebug: ParsedHtml["nooklynDebug"];
+  let streeteasyDebug: ParsedHtml["streeteasyDebug"];
   const stripped = stripHtml(html);
   const textSample = stripped.slice(0, 300);
 
@@ -364,6 +583,7 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHt
     Object.assign(fields, sr.fields);
     allWarnings.push(...sr.warnings);
     extractorsUsed.push(...sr.extractorsUsed);
+    streeteasyDebug = sr.debug;
   }
 
   // generic extraction fills whatever is still missing
@@ -484,8 +704,10 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource): ParsedHt
     confidence: calcConfidence(fields, source),
     extractorsUsed,
     textSample,
+    strippedText: parseOpts.includeText ? stripped : undefined,
     zillowDebug,
     nooklynDebug,
+    streeteasyDebug,
   };
 }
 
@@ -493,7 +715,8 @@ export async function genericExtract(
   rawUrl: string,
   source: ImportSource,
   fetchMode: FetchMode = "direct",
-  scraperApiKey?: string
+  scraperApiKey?: string,
+  opts: { debugText?: boolean; debugFetchProfiles?: boolean } = {}
 ): Promise<ImportPreviewResult> {
   let parsedUrl: URL;
   try {
@@ -506,14 +729,92 @@ export async function genericExtract(
     return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["blocked url"] };
   }
 
+  let fetchModeActuallyUsed: string = fetchMode;
+  let nooklynApiAttempted = false;
+  let nooklynApiSucceeded = false;
+  let nooklynApiStatus: number | undefined;
+  let nooklynApiFieldsFound = 0;
+  let nooklynDirectFallbackUsed = false;
+  let nooklynScraperApiFallbackUsed = false;
+  let streeteasyDirectAttempted = false;
+  let streeteasyDirectProfilesTried: ProfileAttempt[] | undefined;
+  let streeteasyDirectProfileUsed: string | undefined;
+  let streeteasyDirectStatus: number | undefined;
+  let streeteasyDirectBlocked: boolean | undefined;
+  let streeteasyRealPageSignalsFound: string[] | undefined;
+  let streeteasyScraperApiFallbackUsed = false;
+  let streeteasyNextScriptsFound: number | undefined;
+
+  // --- nooklyn: try structured API endpoint first ---
+  if (source === "nooklyn" && fetchMode !== "scraperapi") {
+    const slug = extractSlugFromNooklynUrl(rawUrl);
+    if (slug) {
+      nooklynApiAttempted = true;
+      const apiResult = await fetchNooklynApi(slug, rawUrl);
+      nooklynApiStatus = apiResult.httpStatus;
+      nooklynApiFieldsFound = apiResult.fieldsFound;
+
+      if (apiResult.usable) {
+        nooklynApiSucceeded = true;
+        const fields: ExtractedFields = { canonical_url: rawUrl, source: "nooklyn", ...apiResult.fields };
+        const confidence = calcConfidence(fields, source);
+        return {
+          url: rawUrl, source, confidence, fetchMode,
+          fields,
+          warnings: [...apiResult.warnings, "nooklyn scraperapi fallback not needed"],
+          debug: {
+            extractorsUsed: ["nooklyn-api"],
+            fetchModeActuallyUsed: "nooklyn-api",
+            nooklynDetailSignalsFound: apiResult.fieldsFound,
+            amenitiesFoundCount: apiResult.amenities.length,
+            nooklynApiAttempted: true,
+            nooklynApiSucceeded: true,
+            nooklynApiStatus: apiResult.httpStatus,
+            nooklynApiFieldsFound: apiResult.fieldsFound,
+            nooklynDirectFallbackUsed: false,
+            nooklynScraperApiFallbackUsed: false,
+          },
+        };
+      }
+      // API unusable — fall through to HTML fetch
+    }
+  }
+
+  // --- HTML fetch (direct or scraperapi) ---
   let fetchResult: FetchResult;
-  if (fetchMode === "scraperapi") {
+
+  if (source === "streeteasy" && fetchMode !== "scraperapi") {
+    streeteasyDirectAttempted = true;
+    const seResult = await fetchStreetEasyDirect(rawUrl);
+    streeteasyDirectProfilesTried = seResult.profilesTried;
+    streeteasyDirectProfileUsed = seResult.profileUsed;
+    streeteasyDirectStatus = seResult.httpStatus;
+    streeteasyDirectBlocked = seResult.blocked ?? true;
+    streeteasyRealPageSignalsFound = seResult.realPageSignals ?? [];
+    streeteasyNextScriptsFound = seResult.nextScriptsFound;
+
+    if (!seResult.blocked && seResult.html) {
+      fetchModeActuallyUsed = `streeteasy-direct-profile-${seResult.profileUsed}`;
+      fetchResult = seResult;
+    } else if (scraperApiKey) {
+      streeteasyScraperApiFallbackUsed = true;
+      fetchModeActuallyUsed = "scraperapi";
+      // streeteasy SSRs all listing data in the initial HTML; no browser rendering needed
+      const saResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, { source, render: false });
+      saResult.warnings.push("streeteasy scraperapi fallback used");
+      fetchResult = saResult;
+    } else {
+      fetchResult = {
+        warnings: [...seResult.warnings, "streeteasy direct blocked and scraperapi key missing"],
+        httpStatus: seResult.httpStatus,
+      };
+    }
+  } else if (fetchMode === "scraperapi") {
     if (!scraperApiKey) {
       return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["scraperapi key not configured"] };
     }
-    fetchResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, {
-      useInstructions: source === "zillow",
-    });
+    fetchResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, { source });
+    if (source === "streeteasy") streeteasyScraperApiFallbackUsed = true;
   } else {
     fetchResult = await fetchHtmlDirect(rawUrl);
   }
@@ -525,25 +826,92 @@ export async function genericExtract(
       url: rawUrl, source, confidence: "low", fetchMode,
       fields: { canonical_url: rawUrl, source },
       warnings: fetchWarnings,
-      debug: { httpStatus, extractorsUsed: [] },
+      debug: {
+        httpStatus, extractorsUsed: [], fetchModeActuallyUsed,
+        nooklynApiAttempted, nooklynApiSucceeded, nooklynApiStatus, nooklynApiFieldsFound,
+        nooklynDirectFallbackUsed, nooklynScraperApiFallbackUsed,
+        streeteasyDirectAttempted: streeteasyDirectAttempted || undefined,
+        streeteasyDirectProfilesTried,
+        streeteasyDirectProfileUsed,
+        streeteasyDirectStatus,
+        streeteasyDirectBlocked,
+        streeteasyRealPageSignalsFound,
+        streeteasyScraperApiFallbackUsed: streeteasyScraperApiFallbackUsed || undefined,
+        streeteasyNextScriptsFound,
+      },
     };
   }
 
-  const { fields, warnings, confidence, extractorsUsed, textSample, zillowDebug, nooklynDebug } = parseHtml(html, rawUrl, source);
+  if (source === "nooklyn") nooklynDirectFallbackUsed = true;
+
+  const parsed = parseHtml(html, rawUrl, source, { includeText: opts.debugText });
+
+  // nooklyn: auto-retry with scraperapi if direct HTML parse also missed core fields
+  if (source === "nooklyn" && fetchMode === "direct" && scraperApiKey) {
+    const coreIncomplete = !parsed.fields.rent && (parsed.fields.beds == null || parsed.fields.baths == null);
+    if (coreIncomplete) {
+      parsed.warnings.push("nooklyn direct parse incomplete");
+      const saResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, { source });
+      if (saResult.html) {
+        nooklynScraperApiFallbackUsed = true;
+        fetchModeActuallyUsed = "scraperapi";
+        const saParsed = parseHtml(saResult.html, rawUrl, source, { includeText: opts.debugText });
+        for (const [k, v] of Object.entries(saParsed.fields)) {
+          if ((parsed.fields as Record<string, unknown>)[k] == null && v != null) {
+            (parsed.fields as Record<string, unknown>)[k] = v;
+          }
+        }
+        for (const w of saParsed.warnings) {
+          if (!parsed.warnings.includes(w)) parsed.warnings.push(w);
+        }
+        parsed.warnings.push("nooklyn scraperapi fallback used");
+        parsed.nooklynDebug = saParsed.nooklynDebug ?? parsed.nooklynDebug;
+        if (opts.debugText) parsed.strippedText = saParsed.strippedText;
+      }
+    } else {
+      parsed.warnings.push("nooklyn scraperapi fallback not used");
+    }
+  }
+
+  const debugSnippets = opts.debugText && parsed.strippedText
+    ? extractDebugSnippets(parsed.strippedText)
+    : undefined;
+
+  const confidence = calcConfidence(parsed.fields, source);
   return {
     url: rawUrl, source, confidence, fetchMode,
-    fields,
-    warnings: [...fetchWarnings, ...warnings],
+    fields: parsed.fields,
+    warnings: [...fetchWarnings, ...parsed.warnings],
     debug: {
       httpStatus,
       htmlCharsParsed: html.length,
-      extractorsUsed,
-      zillowDetailSignalsFound: zillowDebug?.zillowDetailSignalsFound,
-      zillowJsonScriptsFound: zillowDebug?.zillowJsonScriptsFound,
-      zillowPropertyCardsFound: zillowDebug?.zillowPropertyCardsFound,
-      nooklynDetailSignalsFound: nooklynDebug?.nooklynDetailSignalsFound,
-      amenitiesFoundCount: nooklynDebug?.amenitiesFoundCount,
-      textSample,
+      extractorsUsed: parsed.extractorsUsed,
+      fetchModeActuallyUsed,
+      zillowDetailSignalsFound: parsed.zillowDebug?.zillowDetailSignalsFound,
+      zillowJsonScriptsFound: parsed.zillowDebug?.zillowJsonScriptsFound,
+      zillowPropertyCardsFound: parsed.zillowDebug?.zillowPropertyCardsFound,
+      nooklynDetailSignalsFound: parsed.nooklynDebug?.nooklynDetailSignalsFound,
+      amenitiesFoundCount: parsed.nooklynDebug?.amenitiesFoundCount ?? parsed.streeteasyDebug?.amenitiesFoundCount,
+      nooklynTransitText: parsed.nooklynDebug?.nooklynTransitText,
+      nooklynApiAttempted,
+      nooklynApiSucceeded,
+      nooklynApiStatus,
+      nooklynApiFieldsFound,
+      nooklynDirectFallbackUsed,
+      nooklynScraperApiFallbackUsed,
+      streeteasyJsonLdScriptsFound: parsed.streeteasyDebug?.streeteasyJsonLdScriptsFound,
+      streeteasyEmbeddedJsonCandidatesFound: parsed.streeteasyDebug?.streeteasyEmbeddedJsonCandidatesFound,
+      streeteasyBlockedSignalsFound: parsed.streeteasyDebug?.streeteasyBlockedSignalsFound,
+      streeteasyDirectAttempted: streeteasyDirectAttempted || undefined,
+      streeteasyDirectProfilesTried,
+      streeteasyDirectProfileUsed,
+      streeteasyDirectStatus,
+      streeteasyDirectBlocked,
+      streeteasyRealPageSignalsFound,
+      streeteasyScraperApiFallbackUsed: streeteasyScraperApiFallbackUsed || undefined,
+      streeteasyNextScriptsFound,
+      debugSnippets,
+      textSample: parsed.textSample,
     },
   };
 }
