@@ -322,7 +322,16 @@ export default function ManualListingForm() {
               </div>
             )}
             {previewImageUrls.length > 0 && (
-              <span className="text-zinc-400">{previewImageUrls.length} image{previewImageUrls.length !== 1 ? "s" : ""} found</span>
+              <div className="flex items-center gap-2 mt-0.5">
+                <img
+                  src={previewImageUrls[0]}
+                  alt=""
+                  className="w-12 h-12 object-cover rounded shrink-0 border border-zinc-200"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  referrerPolicy="no-referrer"
+                />
+                <span className="text-zinc-400">{previewImageUrls.length} image{previewImageUrls.length !== 1 ? "s" : ""} found</span>
+              </div>
             )}
           </div>
         )}
