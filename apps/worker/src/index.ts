@@ -513,7 +513,7 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
   const parsed = z
     .object({
       url: z.string().url(),
-      fetchMode: z.enum(["direct", "scraperapi"]).optional().default("direct"),
+      fetchMode: z.enum(["direct", "proxy"]).optional().default("direct"),
       debugText: z.boolean().optional().default(false),
       debugFetchProfiles: z.boolean().optional().default(false),
     })
@@ -525,8 +525,8 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
 
   const { url, fetchMode, debugText, debugFetchProfiles } = parsed.data;
 
-  if (fetchMode === "scraperapi" && !c.env.SCRAPERAPI_KEY) {
-    return c.json({ error: "missing_scraperapi_key" }, 500);
+  if (fetchMode === "proxy" && !c.env.SCRAPERAPI_KEY) {
+    return c.json({ error: "missing_proxy_key" }, 500);
   }
 
   const result = await importPreview(url, {

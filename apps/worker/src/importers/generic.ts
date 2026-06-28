@@ -478,7 +478,7 @@ async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
   }
 }
 
-async function fetchHtmlWithScraperApi(
+async function fetchHtmlWithProxy(
   url: string,
   apiKey: string,
   opts: { source?: ImportSource; render?: boolean } = {}
@@ -499,7 +499,7 @@ async function fetchHtmlWithScraperApi(
     }
   }
 
-  // without rendering, scraperapi is just a premium proxy — keep timeout tight.
+  // without rendering, proxy is just a premium pass-through — keep timeout tight.
   // with rendering, StreetEasy in particular can take >30s (often too slow for CF workers).
   const timeoutMs = render ? 25_000 : 18_000;
   const controller = new AbortController();
@@ -511,18 +511,18 @@ async function fetchHtmlWithScraperApi(
     });
 
     if (!resp.ok) {
-      return { httpStatus: resp.status, warnings: [`scraperapi returned http ${resp.status}`] };
+      return { httpStatus: resp.status, warnings: [`proxy returned http ${resp.status}`] };
     }
 
     const raw = await resp.text();
     return {
       html: smartSlice(raw, MAX_BYTES),
       httpStatus: resp.status,
-      warnings: ["used temporary scraperapi fetch mode"],
+      warnings: [],
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { warnings: [`scraperapi fetch error: ${msg}`] };
+    return { warnings: [`proxy fetch error: ${msg}`] };
   } finally {
     clearTimeout(timer);
   }
@@ -755,11 +755,11 @@ export async function genericExtract(
   let streeteasyDirectStatus: number | undefined;
   let streeteasyDirectBlocked: boolean | undefined;
   let streeteasyRealPageSignalsFound: string[] | undefined;
-  let streeteasyScraperApiFallbackUsed = false;
+  let streeteasyProxyFallbackUsed = false;
   let streeteasyNextScriptsFound: number | undefined;
 
   // --- nooklyn: try structured API endpoint first ---
-  if (source === "nooklyn" && fetchMode !== "scraperapi") {
+  if (source === "nooklyn" && fetchMode !== "proxy") {
     const slug = extractSlugFromNooklynUrl(rawUrl);
     if (slug) {
       nooklynApiAttempted = true;
@@ -774,7 +774,7 @@ export async function genericExtract(
         return {
           url: rawUrl, source, confidence, fetchMode,
           fields,
-          warnings: [...apiResult.warnings, "nooklyn scraperapi fallback not needed"],
+          warnings: [...apiResult.warnings],
           debug: {
             extractorsUsed: ["nooklyn-api"],
             fetchModeActuallyUsed: "nooklyn-api",
@@ -785,7 +785,7 @@ export async function genericExtract(
             nooklynApiStatus: apiResult.httpStatus,
             nooklynApiFieldsFound: apiResult.fieldsFound,
             nooklynDirectFallbackUsed: false,
-            nooklynScraperApiFallbackUsed: false,
+            nooklynProxyFallbackUsed: false,
             imageUrlsFound: fields.image_urls?.length ?? 0,
           },
         };
@@ -794,10 +794,10 @@ export async function genericExtract(
     }
   }
 
-  // --- HTML fetch (direct or scraperapi) ---
+  // --- HTML fetch (direct or proxy) ---
   let fetchResult: FetchResult;
 
-  if (source === "streeteasy" && fetchMode !== "scraperapi") {
+  if (source === "streeteasy" && fetchMode !== "proxy") {
     streeteasyDirectAttempted = true;
     const seResult = await fetchStreetEasyDirect(rawUrl);
     streeteasyDirectProfilesTried = seResult.profilesTried;
@@ -811,24 +811,24 @@ export async function genericExtract(
       fetchModeActuallyUsed = `streeteasy-direct-profile-${seResult.profileUsed}`;
       fetchResult = seResult;
     } else if (scraperApiKey) {
-      streeteasyScraperApiFallbackUsed = true;
-      fetchModeActuallyUsed = "scraperapi";
+      streeteasyProxyFallbackUsed = true;
+      fetchModeActuallyUsed = "proxy";
       // streeteasy SSRs all listing data in the initial HTML; no browser rendering needed
-      const saResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, { source, render: false });
-      saResult.warnings.push("streeteasy scraperapi fallback used");
+      const saResult = await fetchHtmlWithProxy(rawUrl, scraperApiKey, { source, render: false });
+      saResult.warnings.push("streeteasy proxy fallback used");
       fetchResult = saResult;
     } else {
       fetchResult = {
-        warnings: [...seResult.warnings, "streeteasy direct blocked and scraperapi key missing"],
+        warnings: [...seResult.warnings, "streeteasy direct blocked and proxy key missing"],
         httpStatus: seResult.httpStatus,
       };
     }
-  } else if (fetchMode === "scraperapi") {
+  } else if (fetchMode === "proxy") {
     if (!scraperApiKey) {
-      return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["scraperapi key not configured"] };
+      return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["proxy key not configured"] };
     }
-    fetchResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, { source });
-    if (source === "streeteasy") streeteasyScraperApiFallbackUsed = true;
+    fetchResult = await fetchHtmlWithProxy(rawUrl, scraperApiKey, { source });
+    if (source === "streeteasy") streeteasyProxyFallbackUsed = true;
   } else {
     fetchResult = await fetchHtmlDirect(rawUrl);
   }
@@ -843,14 +843,14 @@ export async function genericExtract(
       debug: {
         httpStatus, extractorsUsed: [], fetchModeActuallyUsed,
         nooklynApiAttempted, nooklynApiSucceeded, nooklynApiStatus, nooklynApiFieldsFound,
-        nooklynDirectFallbackUsed, nooklynScraperApiFallbackUsed,
+        nooklynDirectFallbackUsed, nooklynProxyFallbackUsed,
         streeteasyDirectAttempted: streeteasyDirectAttempted || undefined,
         streeteasyDirectProfilesTried,
         streeteasyDirectProfileUsed,
         streeteasyDirectStatus,
         streeteasyDirectBlocked,
         streeteasyRealPageSignalsFound,
-        streeteasyScraperApiFallbackUsed: streeteasyScraperApiFallbackUsed || undefined,
+        streeteasyProxyFallbackUsed: streeteasyProxyFallbackUsed || undefined,
         streeteasyNextScriptsFound,
         imageUrlsFound: 0,
       },
@@ -861,15 +861,15 @@ export async function genericExtract(
 
   const parsed = parseHtml(html, rawUrl, source, { includeText: opts.debugText });
 
-  // nooklyn: auto-retry with scraperapi if direct HTML parse also missed core fields
+  // nooklyn: auto-retry with proxy if direct HTML parse also missed core fields
   if (source === "nooklyn" && fetchMode === "direct" && scraperApiKey) {
     const coreIncomplete = !parsed.fields.rent && (parsed.fields.beds == null || parsed.fields.baths == null);
     if (coreIncomplete) {
       parsed.warnings.push("nooklyn direct parse incomplete");
-      const saResult = await fetchHtmlWithScraperApi(rawUrl, scraperApiKey, { source });
+      const saResult = await fetchHtmlWithProxy(rawUrl, scraperApiKey, { source });
       if (saResult.html) {
-        nooklynScraperApiFallbackUsed = true;
-        fetchModeActuallyUsed = "scraperapi";
+        nooklynProxyFallbackUsed = true;
+        fetchModeActuallyUsed = "proxy";
         const saParsed = parseHtml(saResult.html, rawUrl, source, { includeText: opts.debugText });
         for (const [k, v] of Object.entries(saParsed.fields)) {
           if ((parsed.fields as Record<string, unknown>)[k] == null && v != null) {
@@ -879,12 +879,10 @@ export async function genericExtract(
         for (const w of saParsed.warnings) {
           if (!parsed.warnings.includes(w)) parsed.warnings.push(w);
         }
-        parsed.warnings.push("nooklyn scraperapi fallback used");
+        parsed.warnings.push("nooklyn proxy fallback used");
         parsed.nooklynDebug = saParsed.nooklynDebug ?? parsed.nooklynDebug;
         if (opts.debugText) parsed.strippedText = saParsed.strippedText;
       }
-    } else {
-      parsed.warnings.push("nooklyn scraperapi fallback not used");
     }
   }
 
@@ -920,7 +918,7 @@ export async function genericExtract(
       nooklynApiStatus,
       nooklynApiFieldsFound,
       nooklynDirectFallbackUsed,
-      nooklynScraperApiFallbackUsed,
+      nooklynProxyFallbackUsed,
       streeteasyJsonLdScriptsFound: parsed.streeteasyDebug?.streeteasyJsonLdScriptsFound,
       streeteasyEmbeddedJsonCandidatesFound: parsed.streeteasyDebug?.streeteasyEmbeddedJsonCandidatesFound,
       streeteasyBlockedSignalsFound: parsed.streeteasyDebug?.streeteasyBlockedSignalsFound,
@@ -930,7 +928,7 @@ export async function genericExtract(
       streeteasyDirectStatus,
       streeteasyDirectBlocked,
       streeteasyRealPageSignalsFound,
-      streeteasyScraperApiFallbackUsed: streeteasyScraperApiFallbackUsed || undefined,
+      streeteasyProxyFallbackUsed: streeteasyProxyFallbackUsed || undefined,
       streeteasyNextScriptsFound,
       debugSnippets,
       textSample: parsed.textSample,

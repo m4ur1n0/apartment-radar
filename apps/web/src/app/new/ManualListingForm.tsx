@@ -5,7 +5,7 @@ import Link from "next/link";
 
 type FetchStatus = "idle" | "fetching" | "done" | "error";
 type SaveStatus = "idle" | "saving" | "success" | "error";
-type FetchMode = "direct" | "scraperapi";
+type FetchMode = "direct" | "proxy";
 
 type ExtractedFields = {
   canonical_url?: string;
@@ -136,7 +136,6 @@ function applyPreview(prev: FormValues, fields: ExtractedFields, importUrl: stri
 export default function ManualListingForm() {
   const [importUrl, setImportUrl] = useState("");
   const [fetchStatus, setFetchStatus] = useState<FetchStatus>("idle");
-  const [activeFetchMode, setActiveFetchMode] = useState<FetchMode>("direct");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [fetchError, setFetchError] = useState("");
 
@@ -157,9 +156,21 @@ export default function ManualListingForm() {
     };
   }
 
+  function detectFetchMode(url: string): FetchMode {
+    try {
+      const { hostname } = new URL(url);
+      if (
+        hostname.includes("zillow.com") ||
+        hostname.includes("trulia.com") ||
+        hostname.includes("hotpads.com") ||
+        hostname.includes("streeteasy.com")
+      ) return "proxy";
+    } catch {}
+    return "direct";
+  }
+
   async function handleFetch(fetchMode: FetchMode) {
     if (!importUrl) return;
-    setActiveFetchMode(fetchMode);
     setFetchStatus("fetching");
     setFetchError("");
     setPreview(null);
@@ -276,19 +287,11 @@ export default function ManualListingForm() {
           />
           <button
             type="button"
-            onClick={() => handleFetch("direct")}
+            onClick={() => handleFetch(detectFetchMode(importUrl))}
             disabled={!importUrl || fetchStatus === "fetching"}
             className="border px-3 py-1 text-sm disabled:opacity-50"
           >
-            {fetchStatus === "fetching" && activeFetchMode === "direct" ? "Fetching..." : "Fetch details"}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleFetch("scraperapi")}
-            disabled={!importUrl || fetchStatus === "fetching"}
-            className="border px-3 py-1 text-sm disabled:opacity-50"
-          >
-            {fetchStatus === "fetching" && activeFetchMode === "scraperapi" ? "Fetching..." : "Try ScraperAPI test"}
+            {fetchStatus === "fetching" ? "Fetching..." : "Fetch details"}
           </button>
         </div>
 
@@ -300,9 +303,6 @@ export default function ManualListingForm() {
           <div className="text-xs text-zinc-500 border-l-2 border-zinc-300 pl-2 flex flex-col gap-0.5">
             <span>
               Source: {preview.source} &middot; Confidence: {preview.confidence}
-              {preview.fetchMode === "scraperapi" && (
-                <span className="ml-2 text-blue-600">[temporary scraperapi preview used]</span>
-              )}
             </span>
             {preview.warnings.length > 0 && (
               <span className="text-amber-600">{preview.warnings.join(", ")}</span>

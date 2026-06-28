@@ -9,7 +9,7 @@ export type ImportSource =
 
 export type Confidence = "low" | "medium" | "high";
 
-export type FetchMode = "direct" | "scraperapi";
+export type FetchMode = "direct" | "proxy";
 
 export interface ExtractedFields {
   canonical_url?: string;
@@ -66,7 +66,7 @@ export interface ImportPreviewResult {
     nooklynApiStatus?: number;
     nooklynApiFieldsFound?: number;
     nooklynDirectFallbackUsed?: boolean;
-    nooklynScraperApiFallbackUsed?: boolean;
+    nooklynProxyFallbackUsed?: boolean;
     streeteasyJsonLdScriptsFound?: number;
     streeteasyEmbeddedJsonCandidatesFound?: number;
     streeteasyBlockedSignalsFound?: number;
@@ -76,7 +76,7 @@ export interface ImportPreviewResult {
     streeteasyDirectStatus?: number;
     streeteasyDirectBlocked?: boolean;
     streeteasyRealPageSignalsFound?: string[];
-    streeteasyScraperApiFallbackUsed?: boolean;
+    streeteasyProxyFallbackUsed?: boolean;
     streeteasyNextScriptsFound?: number;
     debugSnippets?: Record<string, string>;
     textSample?: string;

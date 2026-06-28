@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 
 type FetchStatus = "idle" | "fetching" | "done" | "error";
 type SaveStatus = "idle" | "saving" | "error";
-type FetchMode = "direct" | "scraperapi";
+type FetchMode = "direct" | "proxy";
 
 type ExtractedFields = {
   canonical_url?: string;
@@ -155,7 +155,6 @@ type Props = {
 export default function ListingImportDialog({ onClose, onSuccess }: Props) {
   const [importUrl, setImportUrl] = useState("");
   const [fetchStatus, setFetchStatus] = useState<FetchStatus>("idle");
-  const [activeFetchMode, setActiveFetchMode] = useState<FetchMode>("direct");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [fetchError, setFetchError] = useState("");
   const [previewImageUrls, setPreviewImageUrls] = useState<string[]>([]);
@@ -182,9 +181,21 @@ export default function ListingImportDialog({ onClose, onSuccess }: Props) {
       setValues((prev) => ({ ...prev, [k]: e.target.checked }));
   }
 
+  function detectFetchMode(url: string): FetchMode {
+    try {
+      const { hostname } = new URL(url);
+      if (
+        hostname.includes("zillow.com") ||
+        hostname.includes("trulia.com") ||
+        hostname.includes("hotpads.com") ||
+        hostname.includes("streeteasy.com")
+      ) return "proxy";
+    } catch {}
+    return "direct";
+  }
+
   async function handleFetch(fetchMode: FetchMode) {
     if (!importUrl) return;
-    setActiveFetchMode(fetchMode);
     setFetchStatus("fetching");
     setFetchError("");
     setPreview(null);
@@ -322,23 +333,15 @@ export default function ListingImportDialog({ onClose, onSuccess }: Props) {
                 onChange={(e) => setImportUrl(e.target.value)}
                 placeholder="https://streeteasy.com/..."
                 className="border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 placeholder:text-stone-300 focus:outline-none focus:border-stone-600 transition-colors duration-150 flex-1 min-w-0"
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleFetch("direct"); } }}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleFetch(detectFetchMode(importUrl)); } }}
               />
               <button
                 type="button"
-                onClick={() => handleFetch("direct")}
+                onClick={() => handleFetch(detectFetchMode(importUrl))}
                 disabled={!importUrl || fetchStatus === "fetching"}
                 className="font-mono text-[11px] uppercase tracking-[0.07em] bg-stone-900 text-white px-4 py-2 hover:bg-stone-800 disabled:opacity-40 transition-colors duration-150 shrink-0"
               >
-                {fetchStatus === "fetching" && activeFetchMode === "direct" ? "..." : "Fetch"}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleFetch("scraperapi")}
-                disabled={!importUrl || fetchStatus === "fetching"}
-                className="font-mono text-[11px] uppercase tracking-[0.07em] border border-stone-300 text-stone-600 px-4 py-2 hover:bg-stone-100 disabled:opacity-40 transition-colors duration-150 shrink-0"
-              >
-                {fetchStatus === "fetching" && activeFetchMode === "scraperapi" ? "..." : "ScraperAPI"}
+                {fetchStatus === "fetching" ? "..." : "Fetch"}
               </button>
             </div>
 
@@ -357,9 +360,6 @@ export default function ListingImportDialog({ onClose, onSuccess }: Props) {
                       {preview.source} · {preview.confidence} confidence
                     </span>
                   </div>
-                  {preview.fetchMode === "scraperapi" && (
-                    <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-[var(--color-sage-text)]">scraperapi</span>
-                  )}
                 </div>
                 {preview.warnings.length > 0 && (
                   <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-amber-500">{preview.warnings.join(" · ")}</span>

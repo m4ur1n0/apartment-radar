@@ -393,7 +393,7 @@ export function extractZillowFields(args: { url: string; html: string }): Zillow
   }
 
   if (extractorsUsed.length === 0) {
-    warnings.push("zillow scraperapi html contained no recognizable listing data");
+    warnings.push("zillow proxy html contained no recognizable listing data");
   }
 
   return {
