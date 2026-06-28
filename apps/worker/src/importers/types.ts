@@ -40,6 +40,7 @@ export interface ExtractedFields {
   floor_number?: number;
   pets?: string;
   amenities?: string[];
+  image_urls?: string[];
 }
 
 export interface ImportPreviewResult {
@@ -79,5 +80,7 @@ export interface ImportPreviewResult {
     streeteasyNextScriptsFound?: number;
     debugSnippets?: Record<string, string>;
     textSample?: string;
+    imageUrlsFound?: number;
+    imageExtractorsUsed?: string[];
   };
 }

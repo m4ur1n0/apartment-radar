@@ -1,5 +1,6 @@
 import type { ExtractedFields } from "./types";
 import { amenitiesFromSection, deriveAmenityFields, matchAmenityPhrases } from "./amenities";
+import { extractImageUrlsFromJsonish, dedupeUrls } from "./images";
 
 const NOOKLYN_API_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -11,6 +12,7 @@ export interface NooklynApiResult {
   usable: boolean;
   httpStatus?: number;
   fieldsFound: number;
+  imageUrls: string[];
 }
 
 export function extractSlugFromNooklynUrl(url: string): string | null {
@@ -45,13 +47,13 @@ export async function fetchNooklynApi(slug: string, referer: string): Promise<No
     httpStatus = resp.status;
     if (!resp.ok) {
       warnings.push(`nooklyn api http ${resp.status}`);
-      return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0 };
+      return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0, imageUrls: [] };
     }
     raw = await resp.json();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     warnings.push(`nooklyn api fetch error: ${msg}`);
-    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0 };
+    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0, imageUrls: [] };
   } finally {
     clearTimeout(timer);
   }
@@ -59,7 +61,7 @@ export async function fetchNooklynApi(slug: string, referer: string): Promise<No
   const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
   if (!obj) {
     warnings.push("nooklyn api: non-object response");
-    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0 };
+    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0, imageUrls: [] };
   }
 
   // response may be { listing: {...} } or the listing object directly
@@ -159,7 +161,12 @@ export async function fetchNooklynApi(slug: string, referer: string): Promise<No
 
   warnings.push(usable ? "nooklyn api fetch succeeded" : "nooklyn api response unusable");
 
-  return { fields, amenities, warnings, usable, httpStatus, fieldsFound };
+  // extract images from the listing object
+  const rawImageUrls = extractImageUrlsFromJsonish(listing, referer);
+  const imageUrls = dedupeUrls(rawImageUrls).slice(0, 20);
+  if (imageUrls.length > 0) fields.image_urls = imageUrls;
+
+  return { fields, amenities, warnings, usable, httpStatus, fieldsFound, imageUrls };
 }
 
 function toText(html: string): string {

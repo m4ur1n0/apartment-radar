@@ -103,8 +103,7 @@ function fillFromJsonLd(blocks: Record<string, unknown>[], fields: ExtractedFiel
       const rawPrice = offers?.price ?? b.price;
       if (typeof rawPrice === "number" && rawPrice >= 500 && rawPrice <= 15_000) {
         fields.rent = rawPrice;
-      } else if (typeof rawPrice === "string") {
-        // strip currency symbols, commas, "/mo", etc.
+      } else if (typeof rawPrice === "string" && !/[KkMm]/.test(rawPrice)) {
         const v = parseInt(rawPrice.replace(/[^0-9]/g, ""), 10);
         if (v >= 500 && v <= 15_000) fields.rent = v;
       }
@@ -233,7 +232,7 @@ function fillFromListingObj(obj: Record<string, unknown>, fields: ExtractedField
     const raw = obj.price ?? obj.rent ?? obj.listPrice ?? obj.asking_price;
     if (typeof raw === "number" && raw >= 500 && raw <= 15_000) {
       fields.rent = raw;
-    } else if (typeof raw === "string") {
+    } else if (typeof raw === "string" && !/[KkMm]/.test(raw)) {
       const v = parseInt(raw.replace(/[,$\s]/g, ""), 10);
       if (v >= 500 && v <= 15_000) fields.rent = v;
     }
@@ -336,18 +335,18 @@ function fillFromVisibleText(text: string, fields: ExtractedFields, warnings: st
   let usedText = false;
 
   if (!fields.rent) {
-    // try strict patterns first to avoid picking up nearby-listing prices
+    // (?![KkMm]) rejects amounts like $625K (blog/sale links) before they reach the range check
     const strictM =
-      text.match(/\$([\d,]+)\s*\/\s*(?:mo(?:nth)?)\b/i) ??
-      text.match(/(?:monthly\s+rent|asking|listed\s+at)[:\s]+\$([\d,]+)/i) ??
-      text.match(/\$([\d,]+)\s+per\s+month/i);
+      text.match(/\$([\d,]+)(?![KkMm\d])\s*\/\s*(?:mo(?:nth)?)\b/i) ??
+      text.match(/(?:monthly\s+rent|asking|listed\s+at)[:\s]+\$([\d,]+)(?![KkMm\d])/i) ??
+      text.match(/\$([\d,]+)(?![KkMm\d])\s+per\s+month/i);
     if (strictM) {
       const v = parseInt((strictM[1] ?? strictM[2] ?? "0").replace(/,/g, ""), 10);
       if (v >= 500 && v <= 15_000) { fields.rent = v; usedText = true; }
     }
-    // broader fallback: first dollar amount in the plausible rent range
+    // broader fallback: first dollar amount in the plausible rent range, not followed by K/M
     if (!fields.rent) {
-      for (const m of text.matchAll(/\$([\d,]+)/g)) {
+      for (const m of text.matchAll(/\$([\d,]+)(?![KkMm\d])/g)) {
         const v = parseInt(m[1].replace(/,/g, ""), 10);
         if (v >= 500 && v <= 15_000) { fields.rent = v; usedText = true; break; }
       }

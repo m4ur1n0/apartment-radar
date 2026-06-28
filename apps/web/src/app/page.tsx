@@ -1,5 +1,6 @@
 import Link from "next/link";
 import ListingRatingControls from "./ListingRatingControls";
+import ListingCardImage from "./ListingCardImage";
 
 type SubwayEstimate = {
   station_id: string;
@@ -52,6 +53,7 @@ type Listing = {
   updated_at: string;
   subway_estimates: SubwayEstimate[];
   amenities: string[];
+  image_urls: string[];
 };
 
 function urgencyLabel(score: number): string {
@@ -152,6 +154,10 @@ export default async function Home() {
                     View listing &rarr;
                   </a>
                 </div>
+
+                {l.image_urls?.[0] && (
+                  <ListingCardImage url={l.image_urls[0]} alt={l.title ?? undefined} />
+                )}
 
                 {l.title && (
                   <h2 className="text-base font-semibold text-white mb-1">

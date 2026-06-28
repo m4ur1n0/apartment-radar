@@ -35,6 +35,7 @@ type ExtractedFields = {
   elevator?: boolean;
   pets?: string;
   amenities?: string[];
+  image_urls?: string[];
 };
 
 type ImportPreview = {
@@ -139,6 +140,7 @@ export default function ManualListingForm() {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [fetchError, setFetchError] = useState("");
 
+  const [previewImageUrls, setPreviewImageUrls] = useState<string[]>([]);
   const [values, setValues] = useState<FormValues>(EMPTY);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [saveError, setSaveError] = useState("");
@@ -161,6 +163,7 @@ export default function ManualListingForm() {
     setFetchStatus("fetching");
     setFetchError("");
     setPreview(null);
+    setPreviewImageUrls([]);
     try {
       const res = await fetch("/api/listings/import-preview", {
         method: "POST",
@@ -175,6 +178,7 @@ export default function ManualListingForm() {
       }
       setPreview(data);
       setValues((prev) => applyPreview(prev, data.fields, importUrl));
+      setPreviewImageUrls(data.fields.image_urls ?? []);
       setFetchStatus("done");
     } catch {
       setFetchError("network error");
@@ -225,6 +229,7 @@ export default function ManualListingForm() {
     body.elevator = values.elevator;
     if (values.source_listing_id) body.source_listing_id = values.source_listing_id;
     if (values.amenities.length > 0) body.amenities = values.amenities;
+    if (previewImageUrls.length > 0) body.image_urls = previewImageUrls;
 
     try {
       const res = await fetch("/api/listings/manual", {
@@ -315,6 +320,9 @@ export default function ManualListingForm() {
                   </span>
                 ))}
               </div>
+            )}
+            {previewImageUrls.length > 0 && (
+              <span className="text-zinc-400">{previewImageUrls.length} image{previewImageUrls.length !== 1 ? "s" : ""} found</span>
             )}
           </div>
         )}

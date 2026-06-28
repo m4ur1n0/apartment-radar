@@ -60,6 +60,7 @@ const ManualListingSchema = z.object({
   floor_number: z.number().int().optional(),
   elevator: z.boolean().optional(),
   amenities: z.array(z.string()).optional(),
+  image_urls: z.array(z.string().min(8).max(2000)).max(30).optional().default([]),
 });
 
 const RatingSchema = z.object({
@@ -253,6 +254,21 @@ app.get("/listings", async (c) => {
     }
   }
 
+  const photosByListing: Record<string, string[]> = {};
+  if (listingIds.length > 0) {
+    const photoPlaceholders = listingIds.map(() => "?").join(",");
+    const photoRows = await c.env.DB.prepare(
+      `select listing_id, source_url from listing_photos
+       where listing_id in (${photoPlaceholders})
+       order by listing_id, coalesce(position, 999) asc`
+    ).bind(...listingIds).all();
+    for (const row of photoRows.results as Record<string, unknown>[]) {
+      const lid = row.listing_id as string;
+      if (!photosByListing[lid]) photosByListing[lid] = [];
+      if (photosByListing[lid].length < 10) photosByListing[lid].push(row.source_url as string);
+    }
+  }
+
   const enriched = listings.map((l) => {
     let amenities: string[] = [];
     try {
@@ -262,6 +278,7 @@ app.get("/listings", async (c) => {
       ...l,
       amenities,
       subway_estimates: estimatesByListing[l.id as string] ?? [],
+      image_urls: photosByListing[l.id as string] ?? [],
     };
   });
 
@@ -441,6 +458,19 @@ app.post("/listings/manual", requireAdmin, async (c) => {
       JSON.stringify(d)
     )
     .run();
+
+  if (d.image_urls && d.image_urls.length > 0) {
+    const listingId = (listing as Record<string, unknown>).id as string;
+    try {
+      const photoStmts = d.image_urls.slice(0, 30).map((url, i) =>
+        c.env.DB.prepare(
+          `insert or ignore into listing_photos (id, listing_id, source_url, source, position)
+           values (?, ?, ?, ?, ?)`
+        ).bind(crypto.randomUUID(), listingId, url, d.source, i)
+      );
+      if (photoStmts.length > 0) await c.env.DB.batch(photoStmts);
+    } catch { /* don't fail listing save if photo insert fails */ }
+  }
 
   if (enrichment.subway_estimates.length > 0) {
     const listingId = (listing as Record<string, unknown>).id as string;

@@ -2,6 +2,7 @@ import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, Impor
 import { extractZillowFields } from "./zillow";
 import { extractNooklynFields, extractSlugFromNooklynUrl, fetchNooklynApi } from "./nooklyn";
 import { extractStreetEasyFields } from "./streeteasy";
+import { extractImageUrlsFromHtml, dedupeImages, dedupeUrls } from "./images";
 
 const MAX_BYTES = 500_000;
 const HEAD_BUDGET = 60_000;
@@ -688,6 +689,15 @@ function parseHtml(html: string, rawUrl: string, source: ImportSource, parseOpts
     }
   }
 
+  // generic image extraction: run for all sources, merge with any already found
+  const htmlImgs = extractImageUrlsFromHtml(html, rawUrl);
+  const htmlImgUrls = dedupeImages(htmlImgs).map((i) => i.url);
+  const mergedImgUrls = dedupeUrls([...(fields.image_urls ?? []), ...htmlImgUrls]);
+  if (mergedImgUrls.length > 0) {
+    fields.image_urls = mergedImgUrls.slice(0, 20);
+    if (!extractorsUsed.includes("images")) extractorsUsed.push("images");
+  }
+
   const warnings = [...allWarnings];
   if (!fields.rent) warnings.push("rent not found");
   if (!fields.beds) warnings.push("beds not found");
@@ -773,6 +783,7 @@ export async function genericExtract(
             nooklynApiFieldsFound: apiResult.fieldsFound,
             nooklynDirectFallbackUsed: false,
             nooklynScraperApiFallbackUsed: false,
+            imageUrlsFound: fields.image_urls?.length ?? 0,
           },
         };
       }
@@ -838,6 +849,7 @@ export async function genericExtract(
         streeteasyRealPageSignalsFound,
         streeteasyScraperApiFallbackUsed: streeteasyScraperApiFallbackUsed || undefined,
         streeteasyNextScriptsFound,
+        imageUrlsFound: 0,
       },
     };
   }
@@ -912,6 +924,7 @@ export async function genericExtract(
       streeteasyNextScriptsFound,
       debugSnippets,
       textSample: parsed.textSample,
+      imageUrlsFound: parsed.fields.image_urls?.length ?? 0,
     },
   };
 }
