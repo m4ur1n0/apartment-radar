@@ -26,15 +26,20 @@ export default function ListingRatingControls({ listingId }: { listingId: string
   }
 
   if (status === "success") {
-    return <p className="text-xs text-zinc-500 pt-2">Rating saved.</p>;
+    return (
+      <div className="flex items-center gap-2.5 py-2">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400">Rating saved</span>
+      </div>
+    );
   }
 
   return (
-    <div className="pt-3 border-t border-zinc-800 flex flex-wrap items-center gap-3 text-xs">
+    <div className="flex flex-wrap items-center gap-2">
       <select
         value={userName}
         onChange={(e) => setUserName(e.target.value)}
-        className="bg-zinc-800 border border-zinc-700 px-2 py-1 rounded text-zinc-300"
+        className="border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-700 focus:outline-none focus:border-stone-600 transition-colors duration-150"
       >
         <option value="Theo">Theo</option>
         <option value="Sam">Sam</option>
@@ -45,10 +50,10 @@ export default function ListingRatingControls({ listingId }: { listingId: string
           <button
             key={n}
             onClick={() => setRating(n)}
-            className={`w-6 h-6 rounded border text-xs font-medium transition-colors ${
+            className={`w-7 h-7 font-mono text-[11px] border transition-colors duration-150 ${
               rating === n
-                ? "bg-blue-500 border-blue-500 text-white"
-                : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
+                ? "bg-stone-900 border-stone-900 text-white"
+                : "border-stone-300 text-stone-500 hover:border-stone-600 hover:text-stone-800"
             }`}
           >
             {n}
@@ -58,21 +63,23 @@ export default function ListingRatingControls({ listingId }: { listingId: string
 
       <input
         type="text"
-        placeholder="notes (optional)"
+        placeholder="notes"
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
-        className="bg-zinc-800 border border-zinc-700 px-2 py-1 rounded text-zinc-300 placeholder:text-zinc-600 flex-1 min-w-0"
+        className="border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-900 placeholder:text-stone-300 flex-1 min-w-28 focus:outline-none focus:border-stone-600 transition-colors duration-150"
       />
 
       <button
         onClick={submit}
         disabled={!rating || status === "loading"}
-        className="border border-zinc-600 px-3 py-1 rounded text-zinc-300 disabled:opacity-40 hover:border-zinc-400 transition-colors"
+        className="font-mono text-[11px] uppercase tracking-[0.07em] bg-stone-900 text-white px-4 py-1.5 hover:bg-stone-800 disabled:opacity-40 transition-colors duration-150"
       >
         {status === "loading" ? "..." : "Rate"}
       </button>
 
-      {status === "error" && <span className="text-red-500">failed</span>}
+      {status === "error" && (
+        <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-red-400">Failed</span>
+      )}
     </div>
   );
 }
