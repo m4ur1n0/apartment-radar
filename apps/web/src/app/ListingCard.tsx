@@ -28,6 +28,19 @@ function urgencyLabel(score: number) {
   return "Fair";
 }
 
+function urgencyBorderColor(score: number) {
+  if (score >= 80) return "border-red-200";
+  if (score >= 65) return "border-amber-200";
+  return "border-stone-200";
+}
+
+function urgencyDotColor(score: number) {
+  if (score >= 80) return "bg-red-300";
+  if (score >= 65) return "bg-amber-300";
+  if (score >= 50) return "bg-emerald-300";
+  return "bg-stone-300";
+}
+
 function Thumb({ url, alt }: { url: string; alt?: string }) {
   const [failed, setFailed] = useState(false);
   if (failed) {
@@ -76,7 +89,7 @@ export default function ListingCard({ listing: l, onClick, animDelay = 0 }: Prop
             ${l.rent.toLocaleString()}
             <span className="text-stone-400 text-sm font-normal">/mo</span>
           </span>
-          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-stone-400 border border-stone-200 px-1.5 py-0.5 shrink-0">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-stone-500 border border-stone-200 px-1.5 py-0.5 shrink-0">
             {l.source}
           </span>
         </div>
@@ -93,51 +106,49 @@ export default function ListingCard({ listing: l, onClick, animDelay = 0 }: Prop
           </p>
         )}
 
-        {/* subway */}
+        {/* subway — body font, readable */}
         {l.subway_walk_minutes != null && (
-          <p className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400">
-            ~{l.subway_walk_minutes} min
+          <p className="text-sm text-stone-600 leading-snug">
+            {l.subway_walk_minutes} min walk
             {l.nearest_subway_station ? ` · ${l.nearest_subway_station}` : ""}
-            {l.nearest_subway_lines ? ` · ${l.nearest_subway_lines}` : ""}
+            {l.nearest_subway_lines ? ` (${l.nearest_subway_lines})` : ""}
           </p>
         )}
 
         {/* fee / availability */}
         {(l.fee_status || l.available_date) && (
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             {l.fee_status && (
-              <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-400">{l.fee_status}</span>
+              <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-500">{l.fee_status}</span>
             )}
             {l.available_date && (
-              <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-400">avail {l.available_date}</span>
+              <span className="text-sm text-stone-600">avail {l.available_date}</span>
             )}
           </div>
         )}
 
         <div className="flex-1" />
 
-        {/* score row */}
-        <div className="border-t border-stone-100 pt-2 flex items-center gap-4">
-          <div>
-            <span className="font-mono text-[9px] text-stone-300">fit </span>
-            <span className={`font-mono text-[11px] font-semibold ${scoreColor(l.fit_score)}`}>{l.fit_score}</span>
+        {/* score row — stacked label + number, urgency as a bordered badge */}
+        <div className="border-t border-stone-100 pt-2.5 mt-1 flex items-end justify-between gap-2">
+          <div className="flex items-end gap-5">
+            <div className="flex flex-col gap-0.5">
+              <span className="font-mono text-[8px] uppercase tracking-[0.12em] text-stone-400">fit</span>
+              <span className={`font-mono text-[18px] font-semibold leading-none ${scoreColor(l.fit_score)}`}>{l.fit_score}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="font-mono text-[8px] uppercase tracking-[0.12em] text-stone-400">deal</span>
+              <span className={`font-mono text-[18px] font-semibold leading-none ${scoreColor(l.deal_score)}`}>{l.deal_score}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="font-mono text-[8px] uppercase tracking-[0.12em] text-stone-400">risk</span>
+              <span className={`font-mono text-[18px] font-semibold leading-none ${riskColor(l.risk_score)}`}>{l.risk_score}</span>
+            </div>
           </div>
-          <div>
-            <span className="font-mono text-[9px] text-stone-300">deal </span>
-            <span className={`font-mono text-[11px] font-semibold ${scoreColor(l.deal_score)}`}>{l.deal_score}</span>
-          </div>
-          <div>
-            <span className="font-mono text-[9px] text-stone-300">risk </span>
-            <span className={`font-mono text-[11px] font-semibold ${riskColor(l.risk_score)}`}>{l.risk_score}</span>
-          </div>
-          <div className="flex-1" />
-          <div className="flex items-center gap-1">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              l.urgency_score >= 80 ? "bg-red-300" :
-              l.urgency_score >= 65 ? "bg-amber-300" :
-              l.urgency_score >= 50 ? "bg-emerald-300" : "bg-stone-300"
-            }`} />
-            <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-400">
+
+          <div className={`border px-2 py-1 flex items-center gap-1.5 shrink-0 ${urgencyBorderColor(l.urgency_score)}`}>
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${urgencyDotColor(l.urgency_score)}`} />
+            <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-500">
               {urgencyLabel(l.urgency_score)}
             </span>
           </div>
@@ -145,7 +156,7 @@ export default function ListingCard({ listing: l, onClick, animDelay = 0 }: Prop
 
         {/* image count if multiple */}
         {l.image_urls && l.image_urls.length > 1 && (
-          <p className="font-mono text-[9px] text-stone-300">{l.image_urls.length} photos</p>
+          <p className="font-mono text-[9px] text-stone-400">{l.image_urls.length} photos</p>
         )}
       </div>
     </div>
