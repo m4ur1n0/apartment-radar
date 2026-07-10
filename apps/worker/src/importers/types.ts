@@ -148,6 +148,10 @@ export interface ImportPreviewResult {
     streeteasyJsonLdScriptsFound?: number;
     streeteasyEmbeddedJsonCandidatesFound?: number;
     streeteasyBlockedSignalsFound?: number;
+    streeteasyApiDetailAttempted?: boolean;
+    streeteasyApiDetailSucceeded?: boolean;
+    streeteasyApiDetailStatus?: number;
+    streeteasyApiDetailContentType?: "json" | "html" | "unknown";
     streeteasyDirectAttempted?: boolean;
     streeteasyDirectProfilesTried?: Array<{ name: string; status?: number; bytes?: number; blocked: boolean; signals: number }>;
     streeteasyDirectProfileUsed?: string;

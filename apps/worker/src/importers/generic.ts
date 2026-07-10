@@ -2,6 +2,7 @@ import type { Confidence, ExtractedFields, FetchMode, ImportPreviewResult, Impor
 import { extractZillowFields } from "./zillow";
 import { extractNooklynFields, extractSlugFromNooklynUrl, fetchNooklynApi } from "./nooklyn";
 import { extractStreetEasyFields } from "./streeteasy";
+import { fetchStreetEasyListingJsonOrHtml, normalizeStreetEasyListingUrl } from "./streeteasyApi";
 import { extractImages, dedupeUrls } from "./images";
 import type { ImageExtractionDiagnostics } from "./images";
 
@@ -269,7 +270,7 @@ function calcConfidence(fields: ExtractedFields, source: ImportSource): Confiden
   return coreCount >= 3 ? "high" : coreCount >= 1 ? "medium" : "low";
 }
 
-interface FetchResult {
+export interface FetchResult {
   html?: string;
   httpStatus?: number;
   warnings: string[];
@@ -308,7 +309,7 @@ interface ProfileAttempt {
   signals: number;
 }
 
-interface StreetEasyFetchResult extends FetchResult {
+export interface StreetEasyFetchResult extends FetchResult {
   profileUsed?: string;
   blocked?: boolean;
   realPageSignals?: string[];
@@ -331,7 +332,7 @@ function makeProfileEHeaders(): Record<string, string> {
 
 // tries profiles A–E in order; no explicit User-Agent so the worker platform default is used.
 // harmless preference cookies only — no anti-bot, no captcha, no pxvid/pxcts.
-async function fetchStreetEasyDirect(rawUrl: string): Promise<StreetEasyFetchResult> {
+export async function fetchStreetEasyDirect(rawUrl: string): Promise<StreetEasyFetchResult> {
   const staticProfiles: Array<{ name: string; headers: Record<string, string> }> = [
     {
       name: "A",
@@ -441,7 +442,7 @@ async function fetchStreetEasyDirect(rawUrl: string): Promise<StreetEasyFetchRes
   return { warnings: lastWarnings, httpStatus: lastStatus, blocked: true, realPageSignals: [], profilesTried };
 }
 
-async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
+export async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
@@ -478,54 +479,63 @@ async function fetchHtmlDirect(rawUrl: string): Promise<FetchResult> {
   }
 }
 
-async function fetchHtmlWithProxy(
+export async function fetchHtmlWithProxy(
   url: string,
-  apiKey: string,
+  keys: string[],
   opts: { source?: ImportSource; render?: boolean } = {}
 ): Promise<FetchResult> {
-  const render = opts.render ?? true;
-  const scraperUrl = new URL("https://api.scraperapi.com/");
-  scraperUrl.searchParams.set("url", url);
-
-  const headers: Record<string, string> = {
-    "x-sapi-api_key": apiKey,
-  };
-
-  if (render) {
-    headers["x-sapi-render"] = "true";
-    const instructionSet = opts.source ? getInstructionSet(opts.source) : undefined;
-    if (instructionSet) {
-      headers["x-sapi-instruction_set"] = JSON.stringify(instructionSet);
-    }
+  if (keys.length === 0) {
+    return { warnings: ["no proxy keys configured"] };
   }
 
+  const render = opts.render ?? true;
   // without rendering, proxy is just a premium pass-through — keep timeout tight.
   // with rendering, StreetEasy in particular can take >30s (often too slow for CF workers).
   const timeoutMs = render ? 25_000 : 18_000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(scraperUrl.toString(), {
-      headers,
-      signal: controller.signal,
-    });
 
-    if (!resp.ok) {
-      return { httpStatus: resp.status, warnings: [`proxy returned http ${resp.status}`] };
+  // shuffle to distribute load across keys; retry sequentially on 429 or network error
+  const shuffled = [...keys].sort(() => Math.random() - 0.5);
+
+  let lastResult: FetchResult = { warnings: ["all proxy keys exhausted"] };
+
+  for (const apiKey of shuffled) {
+    const scraperUrl = new URL("https://api.scraperapi.com/");
+    scraperUrl.searchParams.set("url", url);
+
+    const headers: Record<string, string> = { "x-sapi-api_key": apiKey };
+    if (render) {
+      headers["x-sapi-render"] = "true";
+      const instructionSet = opts.source ? getInstructionSet(opts.source) : undefined;
+      if (instructionSet) {
+        headers["x-sapi-instruction_set"] = JSON.stringify(instructionSet);
+      }
     }
 
-    const raw = await resp.text();
-    return {
-      html: smartSlice(raw, MAX_BYTES),
-      httpStatus: resp.status,
-      warnings: [],
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { warnings: [`proxy fetch error: ${msg}`] };
-  } finally {
-    clearTimeout(timer);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(scraperUrl.toString(), { headers, signal: controller.signal });
+
+      if (resp.status === 429) {
+        lastResult = { httpStatus: 429, warnings: [`proxy key rate limited (429), tried next`] };
+        continue;
+      }
+
+      if (!resp.ok) {
+        return { httpStatus: resp.status, warnings: [`proxy returned http ${resp.status}`] };
+      }
+
+      const raw = await resp.text();
+      return { html: smartSlice(raw, MAX_BYTES), httpStatus: resp.status, warnings: [] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      lastResult = { warnings: [`proxy fetch error: ${msg}`] };
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  return lastResult;
 }
 
 interface ParsedHtml {
@@ -728,7 +738,7 @@ export async function genericExtract(
   rawUrl: string,
   source: ImportSource,
   fetchMode: FetchMode = "direct",
-  scraperApiKey?: string,
+  scraperApiKeys?: string[],
   opts: { debugText?: boolean; debugFetchProfiles?: boolean } = {}
 ): Promise<ImportPreviewResult> {
   let parsedUrl: URL;
@@ -749,6 +759,10 @@ export async function genericExtract(
   let nooklynApiFieldsFound = 0;
   let nooklynDirectFallbackUsed = false;
   let nooklynProxyFallbackUsed = false;
+  let streeteasyApiDetailAttempted = false;
+  let streeteasyApiDetailSucceeded = false;
+  let streeteasyApiDetailStatus: number | undefined;
+  let streeteasyApiDetailContentType: "json" | "html" | "unknown" | undefined;
   let streeteasyDirectAttempted = false;
   let streeteasyDirectProfilesTried: ProfileAttempt[] | undefined;
   let streeteasyDirectProfileUsed: string | undefined;
@@ -794,6 +808,64 @@ export async function genericExtract(
     }
   }
 
+  // --- streeteasy: try api-style detail fetch first ---
+  if (source === "streeteasy" && fetchMode !== "proxy") {
+    streeteasyApiDetailAttempted = true;
+    const canonUrl = normalizeStreetEasyListingUrl(rawUrl);
+    const seApiResult = await fetchStreetEasyListingJsonOrHtml(canonUrl);
+    streeteasyApiDetailStatus = seApiResult.httpStatus;
+    streeteasyApiDetailContentType = seApiResult.contentType;
+
+    if (seApiResult.ok) {
+      let htmlForParsing: string | undefined;
+      if (seApiResult.contentType === "json" && seApiResult.json) {
+        const arr = Array.isArray(seApiResult.json) ? seApiResult.json : [seApiResult.json];
+        htmlForParsing = `<script type="application/ld+json">${JSON.stringify(arr)}</script>`;
+      } else if (seApiResult.html) {
+        htmlForParsing = seApiResult.html;
+      }
+
+      if (htmlForParsing) {
+        streeteasyApiDetailSucceeded = true;
+        fetchModeActuallyUsed = "streeteasy-api-detail";
+        const parsed = parseHtml(htmlForParsing, canonUrl, source, { includeText: opts.debugText });
+        const allWarnings = [...seApiResult.warnings, ...parsed.warnings];
+        const debugSnippets = opts.debugText && parsed.strippedText
+          ? extractDebugSnippets(parsed.strippedText)
+          : undefined;
+        const confidence = calcConfidence(parsed.fields, source);
+        return {
+          url: rawUrl, source, confidence, fetchMode,
+          fields: parsed.fields,
+          warnings: allWarnings,
+          debug: {
+            httpStatus: seApiResult.httpStatus,
+            htmlCharsParsed: htmlForParsing.length,
+            extractorsUsed: parsed.extractorsUsed,
+            fetchModeActuallyUsed,
+            streeteasyApiDetailAttempted: true,
+            streeteasyApiDetailSucceeded: true,
+            streeteasyApiDetailStatus,
+            streeteasyApiDetailContentType,
+            streeteasyJsonLdScriptsFound: parsed.streeteasyDebug?.streeteasyJsonLdScriptsFound,
+            streeteasyEmbeddedJsonCandidatesFound: parsed.streeteasyDebug?.streeteasyEmbeddedJsonCandidatesFound,
+            streeteasyBlockedSignalsFound: parsed.streeteasyDebug?.streeteasyBlockedSignalsFound,
+            amenitiesFoundCount: parsed.streeteasyDebug?.amenitiesFoundCount,
+            nooklynApiAttempted: false,
+            nooklynApiSucceeded: false,
+            nooklynApiFieldsFound: 0,
+            nooklynDirectFallbackUsed: false,
+            nooklynProxyFallbackUsed: false,
+            imageUrlsFound: parsed.fields.image_urls?.length ?? 0,
+            debugSnippets,
+            textSample: parsed.textSample,
+          },
+        };
+      }
+    }
+    // api-style fetch failed or returned unusable content — fall through to old direct path
+  }
+
   // --- HTML fetch (direct or proxy) ---
   let fetchResult: FetchResult;
 
@@ -810,11 +882,11 @@ export async function genericExtract(
     if (!seResult.blocked && seResult.html) {
       fetchModeActuallyUsed = `streeteasy-direct-profile-${seResult.profileUsed}`;
       fetchResult = seResult;
-    } else if (scraperApiKey) {
+    } else if (scraperApiKeys && scraperApiKeys.length > 0) {
       streeteasyProxyFallbackUsed = true;
       fetchModeActuallyUsed = "proxy";
       // streeteasy SSRs all listing data in the initial HTML; no browser rendering needed
-      const saResult = await fetchHtmlWithProxy(rawUrl, scraperApiKey, { source, render: false });
+      const saResult = await fetchHtmlWithProxy(rawUrl, scraperApiKeys, { source, render: false });
       saResult.warnings.push("streeteasy proxy fallback used");
       fetchResult = saResult;
     } else {
@@ -824,10 +896,10 @@ export async function genericExtract(
       };
     }
   } else if (fetchMode === "proxy") {
-    if (!scraperApiKey) {
+    if (!scraperApiKeys || scraperApiKeys.length === 0) {
       return { url: rawUrl, source, confidence: "low", fetchMode, fields: {}, warnings: ["proxy key not configured"] };
     }
-    fetchResult = await fetchHtmlWithProxy(rawUrl, scraperApiKey, { source });
+    fetchResult = await fetchHtmlWithProxy(rawUrl, scraperApiKeys, { source });
     if (source === "streeteasy") streeteasyProxyFallbackUsed = true;
   } else {
     fetchResult = await fetchHtmlDirect(rawUrl);
@@ -844,6 +916,10 @@ export async function genericExtract(
         httpStatus, extractorsUsed: [], fetchModeActuallyUsed,
         nooklynApiAttempted, nooklynApiSucceeded, nooklynApiStatus, nooklynApiFieldsFound,
         nooklynDirectFallbackUsed, nooklynProxyFallbackUsed,
+        streeteasyApiDetailAttempted: streeteasyApiDetailAttempted || undefined,
+        streeteasyApiDetailSucceeded: streeteasyApiDetailSucceeded || undefined,
+        streeteasyApiDetailStatus,
+        streeteasyApiDetailContentType,
         streeteasyDirectAttempted: streeteasyDirectAttempted || undefined,
         streeteasyDirectProfilesTried,
         streeteasyDirectProfileUsed,
@@ -862,11 +938,11 @@ export async function genericExtract(
   const parsed = parseHtml(html, rawUrl, source, { includeText: opts.debugText });
 
   // nooklyn: auto-retry with proxy if direct HTML parse also missed core fields
-  if (source === "nooklyn" && fetchMode === "direct" && scraperApiKey) {
+  if (source === "nooklyn" && fetchMode === "direct" && scraperApiKeys && scraperApiKeys.length > 0) {
     const coreIncomplete = !parsed.fields.rent && (parsed.fields.beds == null || parsed.fields.baths == null);
     if (coreIncomplete) {
       parsed.warnings.push("nooklyn direct parse incomplete");
-      const saResult = await fetchHtmlWithProxy(rawUrl, scraperApiKey, { source });
+      const saResult = await fetchHtmlWithProxy(rawUrl, scraperApiKeys, { source });
       if (saResult.html) {
         nooklynProxyFallbackUsed = true;
         fetchModeActuallyUsed = "proxy";
@@ -922,6 +998,10 @@ export async function genericExtract(
       streeteasyJsonLdScriptsFound: parsed.streeteasyDebug?.streeteasyJsonLdScriptsFound,
       streeteasyEmbeddedJsonCandidatesFound: parsed.streeteasyDebug?.streeteasyEmbeddedJsonCandidatesFound,
       streeteasyBlockedSignalsFound: parsed.streeteasyDebug?.streeteasyBlockedSignalsFound,
+      streeteasyApiDetailAttempted: streeteasyApiDetailAttempted || undefined,
+      streeteasyApiDetailSucceeded: streeteasyApiDetailSucceeded || undefined,
+      streeteasyApiDetailStatus,
+      streeteasyApiDetailContentType,
       streeteasyDirectAttempted: streeteasyDirectAttempted || undefined,
       streeteasyDirectProfilesTried,
       streeteasyDirectProfileUsed,

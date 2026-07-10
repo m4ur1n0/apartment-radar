@@ -1,9 +1,9 @@
 import type { ExtractedFields } from "./types";
 import { amenitiesFromSection, deriveAmenityFields, matchAmenityPhrases } from "./amenities";
 import { extractImageUrlsFromJsonish, dedupeUrls } from "./images";
+import { fetchNooklynListingBySlug, extractNooklynSlugFromUrl } from "./nooklynApi";
 
-const NOOKLYN_API_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+export { extractNooklynSlugFromUrl as extractSlugFromNooklynUrl };
 
 export interface NooklynApiResult {
   fields: ExtractedFields;
@@ -15,60 +15,19 @@ export interface NooklynApiResult {
   imageUrls: string[];
 }
 
-export function extractSlugFromNooklynUrl(url: string): string | null {
-  try {
-    const m = new URL(url).pathname.match(/\/listings?\/([\w-]+)/i);
-    return m ? m[1] : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function fetchNooklynApi(slug: string, referer: string): Promise<NooklynApiResult> {
   const warnings: string[] = ["nooklyn api parser used"];
-  const apiUrl = `https://nooklyn.com/api/v2/listings.fetch?slug=${encodeURIComponent(slug)}`;
 
-  let httpStatus: number | undefined;
-  let raw: unknown;
+  const result = await fetchNooklynListingBySlug(slug, referer);
+  const httpStatus = result.httpStatus;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
-  try {
-    const resp = await fetch(apiUrl, {
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "User-Agent": NOOKLYN_API_UA,
-        Referer: referer,
-        Origin: "https://nooklyn.com",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      signal: controller.signal,
-    });
-    httpStatus = resp.status;
-    if (!resp.ok) {
-      warnings.push(`nooklyn api http ${resp.status}`);
-      return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0, imageUrls: [] };
-    }
-    raw = await resp.json();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    warnings.push(`nooklyn api fetch error: ${msg}`);
-    return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0, imageUrls: [] };
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
-  if (!obj) {
-    warnings.push("nooklyn api: non-object response");
+  if (!result.ok || !result.listing) {
+    warnings.push(...result.warnings);
     return { fields: {}, amenities: [], warnings, usable: false, httpStatus, fieldsFound: 0, imageUrls: [] };
   }
 
-  // response may be { listing: {...} } or the listing object directly
-  const listing =
-    "listing" in obj && obj.listing && typeof obj.listing === "object"
-      ? (obj.listing as Record<string, unknown>)
-      : obj;
+  warnings.push(...result.warnings);
+  const listing = result.listing;
 
   const fields: ExtractedFields = {};
   let fieldsFound = 0;

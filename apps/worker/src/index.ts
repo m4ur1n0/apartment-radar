@@ -6,11 +6,16 @@ import { importPreview } from "./importers";
 import { enrichListingLocation } from "./location/enrichListingLocation";
 import { SUBWAY_STATIONS } from "./location/generatedSubwayStations";
 import { geocodeAddress } from "./location/geocodeAddress";
+import { SEARCH_TARGETS, ENABLED_SEARCH_TARGETS } from "./crawler/searchTargets";
+import { discoverListingUrlsForTarget } from "./crawler/discovery";
 
 type Env = {
   DB: D1Database;
   API_ADMIN_TOKEN?: string;
   SCRAPERAPI_KEY?: string;
+  SCRAPERAPI_KEY_01?: string;
+  SCRAPERAPI_KEY_02?: string;
+  SCRAPERAPI_KEY_03?: string;
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -525,13 +530,20 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
 
   const { url, fetchMode, debugText, debugFetchProfiles } = parsed.data;
 
-  if (fetchMode === "proxy" && !c.env.SCRAPERAPI_KEY) {
+  const scraperApiKeys = [
+    c.env.SCRAPERAPI_KEY,
+    c.env.SCRAPERAPI_KEY_01,
+    c.env.SCRAPERAPI_KEY_02,
+    c.env.SCRAPERAPI_KEY_03,
+  ].filter((k): k is string => Boolean(k));
+
+  if (fetchMode === "proxy" && scraperApiKeys.length === 0) {
     return c.json({ error: "missing_proxy_key" }, 500);
   }
 
   const result = await importPreview(url, {
     fetchMode,
-    scraperApiKey: c.env.SCRAPERAPI_KEY,
+    scraperApiKeys,
     debugText,
     debugFetchProfiles,
   });
@@ -564,6 +576,90 @@ app.post("/listings/import-preview", requireAdmin, async (c) => {
   }
 
   return c.json(result);
+});
+
+app.post("/admin/discovery-preview", requireAdmin, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid json" }, 400);
+  }
+
+  const parsed = z
+    .object({
+      targetId: z.string().optional(),
+      targetIds: z.array(z.string()).min(1).max(3).optional(),
+      limitTargets: z.number().int().min(1).max(3).optional(),
+      source: z.enum(["craigslist", "nooklyn", "streeteasy", "zillow"]).optional(),
+      priority: z.enum(["primary", "secondary", "fallback", "experimental"]).optional(),
+      debugMode: z.boolean().optional().default(false),
+      showRejected: z.boolean().optional().default(false),
+      all: z.boolean().optional(),
+    })
+    .safeParse(body);
+
+  if (!parsed.success) {
+    return c.json({ error: "validation failed", issues: parsed.error.issues }, 400);
+  }
+
+  const { targetId, targetIds: rawTargetIds, limitTargets, source, priority, debugMode, all } = parsed.data;
+
+  if (all === true) {
+    return c.json({ error: "all:true is disabled for HTTP preview; use targetIds or limitTargets" }, 400);
+  }
+
+  const targetIds = rawTargetIds ?? (targetId ? [targetId] : null);
+
+  let targets: typeof SEARCH_TARGETS;
+  if (targetIds) {
+    targets = SEARCH_TARGETS.filter((t) => targetIds.includes(t.id));
+    const missing = targetIds.filter((id) => !SEARCH_TARGETS.find((t) => t.id === id));
+    if (missing.length > 0) {
+      return c.json({ error: "unknown target ids", missing }, 400);
+    }
+    if (targets.length === 0) {
+      return c.json({ error: "no matching targets found" }, 400);
+    }
+  } else {
+    let pool = ENABLED_SEARCH_TARGETS as typeof SEARCH_TARGETS;
+    if (source) pool = pool.filter((t) => t.source === source);
+    if (priority) pool = pool.filter((t) => t.priority === priority);
+    const n = limitTargets ?? 1;
+    targets = pool.slice(0, n);
+    if (targets.length === 0) {
+      return c.json({ error: "no matching enabled targets", source, priority }, 400);
+    }
+  }
+
+  const discoveryScraperKeys = [
+    c.env.SCRAPERAPI_KEY,
+    c.env.SCRAPERAPI_KEY_01,
+    c.env.SCRAPERAPI_KEY_02,
+    c.env.SCRAPERAPI_KEY_03,
+  ].filter((k): k is string => Boolean(k));
+
+  const BUDGET_MS = 45_000;
+  const runStart = Date.now();
+  const results = [];
+  const warnings: string[] = [];
+
+  for (const t of targets) {
+    if (Date.now() - runStart > BUDGET_MS) {
+      warnings.push("preview_time_budget_reached");
+      break;
+    }
+    const result = await discoverListingUrlsForTarget(t, { debug: debugMode, scraperApiKeys: discoveryScraperKeys });
+    results.push(result);
+  }
+
+  return c.json({
+    discoveryImplementationVersion: "nooklyn-streeteasy-zillow-v1",
+    targetsRequested: targets.length,
+    targetsCompleted: results.length,
+    ...(warnings.length > 0 && { warnings }),
+    results,
+  });
 });
 
 app.post("/listings/:id/ratings", requireAdmin, async (c) => {
