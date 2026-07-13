@@ -4,7 +4,7 @@
     "main": "src/index.ts",
     "compatibility_date": "2026-06-25",
     "triggers": {
-        "crons": ["0 14 * * *", "0 22 * * *"]
+        "crons": ["0 * * * *"]
     },
     "observability": {
         "enabled": false,
@@ -25,7 +25,7 @@
         {
             "binding": "DB",
             "database_name": "apt_radar",
-            "database_id": "6ba82db0-0e8b-4df7-ba39-7db8a6b0398f"
+            "database_id": "f7b49aaf-2211-419c-a0e1-c4d662a0f5fc"
         }
     ]
 }

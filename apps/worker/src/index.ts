@@ -8,6 +8,20 @@ import { SUBWAY_STATIONS } from "./location/generatedSubwayStations";
 import { geocodeAddress } from "./location/geocodeAddress";
 import { SEARCH_TARGETS, ENABLED_SEARCH_TARGETS } from "./crawler/searchTargets";
 import { discoverListingUrlsForTarget } from "./crawler/discovery";
+import {
+  createCrawlRun,
+  finishCrawlRun,
+  upsertDiscoveredCandidates,
+  type DiscoveredCandidateParams,
+} from "./db/crawlDiscovery";
+import { saveListing } from "./importers/saveListing";
+import type { ListingFieldsForSave } from "./importers/saveListing";
+import {
+  enqueueImportJobsFromDiscoveredUrls,
+  processNextImportJobs,
+  getImportJobStats,
+} from "./db/importJobs";
+import { runScheduledCrawler } from "./crawler/scheduledCrawler";
 
 type Env = {
   DB: D1Database;
@@ -76,153 +90,6 @@ const RatingSchema = z.object({
 });
 
 type ListingInput = z.infer<typeof ManualListingSchema>;
-
-function clamp(v: number): number {
-  return Math.round(Math.min(100, Math.max(0, v)) * 10) / 10;
-}
-
-function calcDealScore(d: ListingInput): number {
-  if (d.rent > 3000) return 0;
-  let s = 50;
-  if (d.rent <= 2600) s += 25;
-  else if (d.rent <= 2800) s += 15;
-  else if (d.rent <= 2900) s += 8;
-  else s += 3;
-  if (d.sqft) {
-    const rps = d.rent / d.sqft;
-    if (rps <= 3.0) s += 10;
-    else if (rps <= 3.5) s += 5;
-  }
-  const fee = (d.fee_status ?? "").toLowerCase();
-  if (fee.includes("no fee")) s += 10;
-  else if (fee.includes("broker") || fee.includes("fee")) s -= 10;
-  return clamp(s);
-}
-
-function calcSubwayScore(d: ListingInput): number {
-  let s = 55;
-  const lines = (d.nearest_subway_lines ?? "").toUpperCase();
-  if (lines.includes("L")) s += 10;
-  if (lines.includes("M")) s += 10;
-  if (lines.includes("J")) s += 5;
-  if (lines.includes("Z")) s += 5;
-  const walk = d.subway_walk_minutes;
-  if (walk !== undefined) {
-    if (walk <= 5) s += 15;
-    else if (walk <= 8) s += 10;
-    else if (walk <= 12) s += 5;
-    else if (walk <= 20) s -= 5;
-    else s -= 15;
-  }
-  const commute = d.manhattan_commute_minutes;
-  if (commute !== undefined) {
-    if (commute <= 25) s += 10;
-    else if (commute <= 35) s += 5;
-    else if (commute > 45) s -= 10;
-  }
-  return clamp(s);
-}
-
-function calcLayoutScore(d: ListingInput): number {
-  let s = 50;
-  if (d.beds === 2) s += 15;
-  if (d.baths >= 1.5) s += 5;
-  if (d.sqft == null) {
-    s -= 10;
-  } else if (d.sqft >= 900) {
-    s += 20;
-  } else if (d.sqft >= 800) {
-    s += 15;
-  } else if (d.sqft >= 700) {
-    s += 10;
-  } else if (d.sqft < 600) {
-    s -= 20;
-  }
-  const text = ((d.description ?? "") + " " + (d.title ?? "")).toLowerCase();
-  if (text.includes("large living") || text.includes("spacious living")) s += 5;
-  if (text.includes("eat-in kitchen") || text.includes("separate kitchen")) s += 5;
-  if (text.includes("railroad")) s -= 15;
-  if (text.includes("floorplan") || text.includes("floor plan")) s += 3;
-  return clamp(s);
-}
-
-function calcNeighborhoodScore(d: ListingInput): number {
-  let s = 50;
-  const n = (d.neighborhood ?? "").toLowerCase();
-  if (n.includes("ridgewood")) s += 30;
-  else if (n.includes("bushwick")) s += 20;
-  else if (n.includes("east williamsburg")) s += 15;
-  else if (n.includes("bed-stuy") || n.includes("bed stuy") || n.includes("bedford")) s += 10;
-  else if (n.includes("crown heights")) s += 5;
-  return clamp(s);
-}
-
-function calcAmenitiesScore(d: ListingInput): number {
-  let s = 50;
-  const laundry = (d.laundry ?? "").toLowerCase();
-  if (laundry.includes("in-unit") || laundry.includes("in unit")) s += 20;
-  else if (laundry.length > 0) s += 10;
-  if (d.dishwasher) s += 10;
-  if (d.outdoor_space) s += 10;
-  if (d.elevator) s += 5;
-  return clamp(s);
-}
-
-function calcRiskScore(d: ListingInput): number {
-  let s = 10;
-  if (!d.sqft) s += 15;
-  if (!d.address_text && d.latitude == null && d.longitude == null) s += 10;
-  if (!d.available_date) s += 10;
-  if (!d.fee_status) s += 10;
-  if (!d.nearest_subway_station && !d.nearest_subway_lines) s += 10;
-  const text = ((d.description ?? "") + " " + (d.title ?? "")).toLowerCase();
-  if (text.includes("net effective")) s += 15;
-  if (text.includes("flex")) s += 10;
-  if (text.includes("railroad")) s += 15;
-  if (d.rent < 2400) s += 15;
-  return clamp(s);
-}
-
-interface Scores {
-  fit_score: number;
-  deal_score: number;
-  urgency_score: number;
-  risk_score: number;
-}
-
-function calcScores(d: ListingInput): Scores {
-  const deal = calcDealScore(d);
-  const subway = calcSubwayScore(d);
-  const layout = calcLayoutScore(d);
-  const neighborhood = calcNeighborhoodScore(d);
-  const amenities = calcAmenitiesScore(d);
-  const risk = calcRiskScore(d);
-
-  const fit = clamp(
-    0.3 * deal +
-      0.2 * subway +
-      0.2 * layout +
-      0.15 * neighborhood +
-      0.1 * (100 - risk) +
-      0.05 * amenities
-  );
-
-  let urgency = fit;
-  if (d.available_date?.includes("-09-")) urgency *= 1.1;
-  if (deal >= 70 && subway >= 70) urgency += 5;
-
-  return {
-    fit_score: fit,
-    deal_score: deal,
-    urgency_score: clamp(urgency),
-    risk_score: risk,
-  };
-}
-
-function boolToInt(v: boolean | undefined | null): number | null {
-  if (v == null) return null;
-  return v ? 1 : 0;
-}
 
 app.get("/health", (c) => c.json({ ok: true, service: "apt-radar-api" }));
 
@@ -338,173 +205,43 @@ app.post("/listings/manual", requireAdmin, async (c) => {
 
   const d = parsed.data;
 
-  // resolve coordinates: use provided values or geocode from address
-  let resolvedLat = d.latitude ?? null;
-  let resolvedLng = d.longitude ?? null;
-  if ((resolvedLat == null || resolvedLng == null) && d.address_text) {
-    const geo = await geocodeAddress(d.address_text);
-    if (geo) {
-      resolvedLat = geo.latitude;
-      resolvedLng = geo.longitude;
-    }
-  }
-
-  const enrichment = enrichListingLocation(
-    { latitude: resolvedLat ?? undefined, longitude: resolvedLng ?? undefined },
-    SUBWAY_STATIONS
-  );
-
-  const subwayStation = d.nearest_subway_station ?? enrichment.nearest_subway_station ?? null;
-  const subwayLines = d.nearest_subway_lines ?? enrichment.nearest_subway_lines ?? null;
-  const subwayWalk = d.subway_walk_minutes ?? enrichment.subway_walk_minutes ?? null;
-  const subwayWalkSource = enrichment.subway_walk_source ?? null;
-  const subwayWalkConfidence = enrichment.subway_walk_confidence ?? null;
-  const mapsUrl = enrichment.google_maps_directions_url ?? null;
-
-  const enrichedD: ListingInput = {
-    ...d,
-    nearest_subway_station: subwayStation ?? undefined,
-    nearest_subway_lines: subwayLines ?? undefined,
-    subway_walk_minutes: subwayWalk ?? undefined,
+  const input: ListingFieldsForSave = {
+    canonical_url: d.canonical_url,
+    source: d.source,
+    source_listing_id: d.source_listing_id ?? null,
+    title: d.title ?? null,
+    description: d.description ?? null,
+    address_text: d.address_text ?? null,
+    neighborhood: d.neighborhood ?? null,
+    borough: d.borough,
+    latitude: d.latitude ?? null,
+    longitude: d.longitude ?? null,
+    rent: d.rent,
+    beds: d.beds,
+    baths: d.baths,
+    sqft: d.sqft ?? null,
+    available_date: d.available_date ?? null,
+    nearest_subway_station: d.nearest_subway_station ?? null,
+    nearest_subway_lines: d.nearest_subway_lines ?? null,
+    subway_walk_minutes: d.subway_walk_minutes ?? null,
+    manhattan_commute_minutes: d.manhattan_commute_minutes ?? null,
+    fee_status: d.fee_status ?? null,
+    laundry: d.laundry ?? null,
+    dishwasher: d.dishwasher ?? null,
+    outdoor_space: d.outdoor_space ?? null,
+    pets: d.pets ?? null,
+    floor_number: d.floor_number ?? null,
+    elevator: d.elevator ?? null,
+    amenities: d.amenities,
+    image_urls: d.image_urls,
   };
 
-  const scores = calcScores(enrichedD);
-  const id = crypto.randomUUID();
-
-  const amenitiesJson = d.amenities?.length ? JSON.stringify(d.amenities) : null;
-
-  await c.env.DB.prepare(
-    `insert into listings (
-      id, canonical_url, source, source_listing_id, title, description,
-      address_text, neighborhood, borough, latitude, longitude,
-      rent, beds, baths, sqft, available_date,
-      nearest_subway_station, nearest_subway_lines, subway_walk_minutes, manhattan_commute_minutes,
-      subway_walk_source, subway_walk_confidence, google_maps_directions_url,
-      fee_status, laundry, dishwasher, outdoor_space, pets, floor_number, elevator,
-      amenities_json,
-      fit_score, deal_score, urgency_score, risk_score
-    ) values (
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, ?,
-      ?,
-      ?, ?, ?, ?
-    )
-    on conflict(canonical_url) do update set
-      source = excluded.source,
-      source_listing_id = excluded.source_listing_id,
-      title = excluded.title,
-      description = excluded.description,
-      address_text = excluded.address_text,
-      neighborhood = excluded.neighborhood,
-      borough = excluded.borough,
-      latitude = excluded.latitude,
-      longitude = excluded.longitude,
-      rent = excluded.rent,
-      beds = excluded.beds,
-      baths = excluded.baths,
-      sqft = excluded.sqft,
-      available_date = excluded.available_date,
-      nearest_subway_station = excluded.nearest_subway_station,
-      nearest_subway_lines = excluded.nearest_subway_lines,
-      subway_walk_minutes = excluded.subway_walk_minutes,
-      manhattan_commute_minutes = excluded.manhattan_commute_minutes,
-      subway_walk_source = excluded.subway_walk_source,
-      subway_walk_confidence = excluded.subway_walk_confidence,
-      google_maps_directions_url = excluded.google_maps_directions_url,
-      fee_status = excluded.fee_status,
-      laundry = excluded.laundry,
-      dishwasher = excluded.dishwasher,
-      outdoor_space = excluded.outdoor_space,
-      pets = excluded.pets,
-      floor_number = excluded.floor_number,
-      elevator = excluded.elevator,
-      amenities_json = excluded.amenities_json,
-      fit_score = excluded.fit_score,
-      deal_score = excluded.deal_score,
-      urgency_score = excluded.urgency_score,
-      risk_score = excluded.risk_score,
-      last_seen_at = datetime('now'),
-      updated_at = datetime('now')`
-  )
-    .bind(
-      id, d.canonical_url, d.source, d.source_listing_id ?? null, d.title ?? null, d.description ?? null,
-      d.address_text ?? null, d.neighborhood ?? null, d.borough, resolvedLat, resolvedLng,
-      d.rent, d.beds, d.baths, d.sqft ?? null, d.available_date ?? null,
-      subwayStation, subwayLines, subwayWalk, d.manhattan_commute_minutes ?? null,
-      subwayWalkSource, subwayWalkConfidence, mapsUrl,
-      d.fee_status ?? null, d.laundry ?? null, boolToInt(d.dishwasher), boolToInt(d.outdoor_space), d.pets ?? null, d.floor_number ?? null, boolToInt(d.elevator),
-      amenitiesJson,
-      scores.fit_score, scores.deal_score, scores.urgency_score, scores.risk_score
-    )
-    .run();
-
-  const listing = await c.env.DB.prepare(
-    `select * from listings where canonical_url = ?`
-  )
+  const saveResult = await saveListing(c.env.DB, input);
+  const listing = await c.env.DB.prepare("select * from listings where canonical_url = ?")
     .bind(d.canonical_url)
     .first();
 
-  const snapshotId = crypto.randomUUID();
-  await c.env.DB.prepare(
-    `insert into listing_snapshots (id, listing_id, rent, sqft, title, description, raw_json)
-     values (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      snapshotId,
-      (listing as Record<string, unknown>).id,
-      d.rent,
-      d.sqft ?? null,
-      d.title ?? null,
-      d.description ?? null,
-      JSON.stringify(d)
-    )
-    .run();
-
-  if (d.image_urls && d.image_urls.length > 0) {
-    const listingId = (listing as Record<string, unknown>).id as string;
-    try {
-      const photoStmts = d.image_urls.slice(0, 30).map((url, i) =>
-        c.env.DB.prepare(
-          `insert or ignore into listing_photos (id, listing_id, source_url, source, position)
-           values (?, ?, ?, ?, ?)`
-        ).bind(crypto.randomUUID(), listingId, url, d.source, i)
-      );
-      if (photoStmts.length > 0) await c.env.DB.batch(photoStmts);
-    } catch { /* don't fail listing save if photo insert fails */ }
-  }
-
-  if (enrichment.subway_estimates.length > 0) {
-    const listingId = (listing as Record<string, unknown>).id as string;
-    const deleteStmt = c.env.DB.prepare(
-      `delete from listing_subway_estimates where listing_id = ?`
-    ).bind(listingId);
-    const estimateStmts = enrichment.subway_estimates.map((e) =>
-      c.env.DB.prepare(
-        `insert into listing_subway_estimates
-           (id, listing_id, station_id, station_name, lines, straight_line_miles,
-            estimated_walk_minutes, estimate_method, confidence, google_maps_directions_url, created_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
-      ).bind(
-        crypto.randomUUID(),
-        listingId,
-        e.station_id,
-        e.station_name,
-        e.lines.join(","),
-        e.straight_line_miles,
-        e.estimated_walk_minutes,
-        e.estimate_method,
-        e.confidence,
-        e.google_maps_directions_url
-      )
-    );
-    await c.env.DB.batch([deleteStmt, ...estimateStmts]);
-  }
-
-  return c.json({ listing, enrichment_warnings: enrichment.warnings });
+  return c.json({ listing, enrichment_warnings: saveResult.enrichmentWarnings });
 });
 
 app.post("/listings/import-preview", requireAdmin, async (c) => {
@@ -690,6 +427,282 @@ app.post("/listings/:id/ratings", requireAdmin, async (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/admin/crawler/discover", requireAdmin, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid json" }, 400);
+  }
+
+  const schema = z.object({
+    targetIds: z.array(z.string()).min(1).max(3),
+    dryRun: z.boolean().optional().default(true),
+    debugMode: z.boolean().optional().default(false),
+    showRejected: z.boolean().optional().default(false),
+  });
+
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "validation failed", issues: parsed.error.issues }, 400);
+  }
+
+  const { targetIds, dryRun, debugMode, showRejected } = parsed.data;
+
+  const targets = SEARCH_TARGETS.filter((t) => targetIds.includes(t.id));
+  const missing = targetIds.filter((id) => !SEARCH_TARGETS.find((t) => t.id === id));
+  if (missing.length > 0) {
+    return c.json({ error: "unknown target ids", missing }, 400);
+  }
+  if (targets.length === 0) {
+    return c.json({ error: "no matching targets found" }, 400);
+  }
+
+  const scraperKeys = [
+    c.env.SCRAPERAPI_KEY,
+    c.env.SCRAPERAPI_KEY_01,
+    c.env.SCRAPERAPI_KEY_02,
+    c.env.SCRAPERAPI_KEY_03,
+  ].filter((k): k is string => Boolean(k));
+
+  const BUDGET_MS = 45_000;
+  const runStart = Date.now();
+
+  const crawlRunId = dryRun
+    ? null
+    : await createCrawlRun(c.env.DB, {
+        runType: "discovery",
+        source: targets.length === 1 ? targets[0].source : undefined,
+        targetId: targets.length === 1 ? targets[0].id : undefined,
+        targetsRequested: targets.length,
+      });
+
+  const perTargetResults: unknown[] = [];
+  let totalCandidatesFound = 0;
+  let totalRejected = 0;
+  let totalInserted = 0;
+  let totalUpdated = 0;
+  let completedTargets = 0;
+  const allWarnings: string[] = [];
+
+  for (const target of targets) {
+    if (Date.now() - runStart > BUDGET_MS) {
+      allWarnings.push("discovery_time_budget_reached");
+      break;
+    }
+
+    const result = await discoverListingUrlsForTarget(target, {
+      debug: debugMode,
+      scraperApiKeys: scraperKeys,
+    });
+
+    completedTargets++;
+    totalCandidatesFound += result.candidatesFound;
+    totalRejected += result.rejected.length;
+    if (result.warnings.length > 0) {
+      allWarnings.push(...result.warnings.map((w) => `[${target.id}] ${w}`));
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    const persistedUrls: string[] = [];
+
+    if (!dryRun && crawlRunId && result.candidates.length > 0) {
+      const candidateParams: DiscoveredCandidateParams[] = result.candidates.map((cand) => ({
+        source: target.source,
+        targetId: target.id,
+        crawlRunId,
+        listingUrl: cand.listingUrl,
+        canonicalUrl: cand.canonicalUrl ?? cand.listingUrl,
+        sourceListingId: cand.sourceListingId,
+        title: cand.title,
+        price: cand.price,
+        beds: cand.beds,
+        baths: cand.baths,
+        neighborhood: cand.neighborhood,
+        address: cand.address,
+        latitude: cand.latitude,
+        longitude: cand.longitude,
+        discoveryConfidence: cand.confidence,
+      }));
+
+      const upsertResult = await upsertDiscoveredCandidates(c.env.DB, candidateParams);
+      inserted = upsertResult.inserted;
+      updated = upsertResult.updated;
+      for (const r of upsertResult.results.slice(0, 3)) {
+        persistedUrls.push(r.canonicalUrl);
+      }
+    }
+
+    totalInserted += inserted;
+    totalUpdated += updated;
+
+    perTargetResults.push({
+      targetId: target.id,
+      source: target.source,
+      candidatesFound: result.candidatesFound,
+      candidatesRejected: result.rejected.length,
+      ...(result.warnings.length > 0 && { warnings: result.warnings }),
+      ...(showRejected && result.rejected.length > 0 && {
+        rejected: (result.rejectedPreview ?? result.rejected).slice(0, 20),
+      }),
+      ...(!dryRun && {
+        insertedCandidates: inserted,
+        updatedCandidates: updated,
+        persistedUrls,
+      }),
+      ...(debugMode && result.debug && { debug: result.debug }),
+    });
+  }
+
+  if (!dryRun && crawlRunId) {
+    await finishCrawlRun(c.env.DB, crawlRunId, {
+      status: "completed",
+      finishedAt: new Date().toISOString(),
+      targetsCompleted: completedTargets,
+      candidatesFound: totalCandidatesFound,
+      candidatesAccepted: totalInserted + totalUpdated,
+      candidatesRejected: totalRejected,
+      warningsJson: allWarnings.length > 0 ? JSON.stringify(allWarnings) : undefined,
+    });
+  }
+
+  return c.json({
+    ok: true,
+    dryRun,
+    ...(crawlRunId && { crawlRunId }),
+    targetsRequested: targets.length,
+    targetsCompleted: completedTargets,
+    persistedCandidates: totalInserted + totalUpdated,
+    updatedCandidates: totalUpdated,
+    insertedCandidates: totalInserted,
+    ...(allWarnings.length > 0 && { warnings: allWarnings }),
+    results: perTargetResults,
+  });
+});
+
+app.post("/admin/crawler/enqueue-imports", requireAdmin, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid json" }, 400);
+  }
+
+  const schema = z.object({
+    source: z.string().optional(),
+    targetId: z.string().optional(),
+    limit: z.number().int().min(1).max(25).optional().default(10),
+    priority: z.number().int().optional().default(0),
+    dryRun: z.boolean().optional().default(true),
+  });
+
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "validation failed", issues: parsed.error.issues }, 400);
+  }
+
+  const { source, targetId, limit, priority, dryRun } = parsed.data;
+
+  const result = await enqueueImportJobsFromDiscoveredUrls(c.env.DB, {
+    source,
+    targetId,
+    limit,
+    priority,
+    dryRun,
+  });
+
+  return c.json({ ok: true, ...result });
+});
+
+app.post("/admin/crawler/import-next", requireAdmin, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid json" }, 400);
+  }
+
+  const schema = z.object({
+    source: z.string().optional(),
+    limit: z.number().int().min(1).max(5).optional().default(1),
+    dryRun: z.boolean().optional().default(true),
+  });
+
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "validation failed", issues: parsed.error.issues }, 400);
+  }
+
+  const { source, limit, dryRun } = parsed.data;
+
+  const scraperApiKeys = [
+    c.env.SCRAPERAPI_KEY,
+    c.env.SCRAPERAPI_KEY_01,
+    c.env.SCRAPERAPI_KEY_02,
+    c.env.SCRAPERAPI_KEY_03,
+  ].filter((k): k is string => Boolean(k));
+
+  const result = await processNextImportJobs(c.env.DB, {
+    source,
+    limit,
+    dryRun,
+    scraperApiKeys,
+  });
+
+  return c.json({ ok: true, ...result });
+});
+
+app.get("/admin/crawler/stats", requireAdmin, async (c) => {
+  const stats = await getImportJobStats(c.env.DB);
+  return c.json({ ok: true, ...stats });
+});
+
+app.post("/admin/crawler/run-once", requireAdmin, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid json" }, 400);
+  }
+
+  const schema = z.object({
+    dryRun: z.boolean().optional().default(true),
+    maxDiscoveryTargets: z.number().int().min(1).max(3).optional().default(1),
+    maxEnqueueJobs: z.number().int().min(0).max(25).optional().default(3),
+    maxImportJobs: z.number().int().min(0).max(5).optional().default(1),
+    source: z.string().optional(),
+  });
+
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "validation failed", issues: parsed.error.issues }, 400);
+  }
+
+  const { dryRun, maxDiscoveryTargets, maxEnqueueJobs, maxImportJobs, source } = parsed.data;
+
+  const scraperApiKeys = [
+    c.env.SCRAPERAPI_KEY,
+    c.env.SCRAPERAPI_KEY_01,
+    c.env.SCRAPERAPI_KEY_02,
+    c.env.SCRAPERAPI_KEY_03,
+  ].filter((k): k is string => Boolean(k));
+
+  const result = await runScheduledCrawler(c.env, undefined, {
+    mode: "manual",
+    dryRun,
+    maxDiscoveryTargets,
+    maxEnqueueJobs,
+    maxImportJobs,
+    source,
+    scraperApiKeys,
+  });
+
+  return c.json(result);
+});
+
+export { app };
+
 export default {
   fetch: app.fetch,
   async scheduled(
@@ -697,15 +710,14 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ) {
-    ctx.waitUntil(runScheduledCollection(env));
+    ctx.waitUntil(
+      runScheduledCrawler(env, ctx, {
+        mode: "scheduled",
+        dryRun: false,
+        maxDiscoveryTargets: 2,
+        maxEnqueueJobs: 10,
+        maxImportJobs: 3,
+      })
+    );
   },
 };
-
-async function runScheduledCollection(env: Env) {
-  await env.DB.prepare(
-    `insert into search_runs (source, status, started_at, finished_at, notes)
-     values (?, ?, datetime('now'), datetime('now'), ?)`
-  )
-    .bind("manual-placeholder", "ok", "collector not implemented yet")
-    .run();
-}

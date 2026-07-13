@@ -4,6 +4,15 @@ const SE_API_URL = "https://api-v6.streeteasy.com/";
 // verified area IDs for the SE GraphQL search API; add more as confirmed
 export const STREETEASY_AREA_IDS: Readonly<Record<string, number[]>> = {
   "streeteasy-url-first-bushwick-2br-max3100": [313],
+  "streeteasy-url-first-ridgewood-2br-max3100": [412],
+  "streeteasy-url-first-east-williamsburg-2br-max3100" : [373],
+  "streeteasy-url-first-bed-stuy-2br-max3100" : [310],
+  "streeteasy-url-first-stuyvesant-heights-2br-max3100" : [312],
+  "streeteasy-url-first-maspeth-2br-max3100" : [410],
+  "streeteasy-url-first-ocean-hill-2br-max3100" : [353],
+  "streeteasy-url-first-brooklyn-broad-2br-max3100" : [300],
+  "streeteasy-url-first-queens-broad-2br-max3100" : [400],
+
 };
 
 const STREETEASY_API_HEADERS: Record<string, string> = {
