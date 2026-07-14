@@ -181,12 +181,7 @@ export default function Dashboard() {
             >
               Crawler
             </button>
-            <Link
-              href="/map"
-              className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"
-            >
-              Map
-            </Link>
+            
             <button
               onClick={triggerRefetch}
               className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"
@@ -199,6 +194,12 @@ export default function Dashboard() {
             >
               + Add listing
             </button>
+            <Link
+              href="/map"
+              className="font-mono text-[11px] uppercase tracking-[0.07em] bg-stone-900 text-white px-5 py-2.5 hover:bg-stone-800 transition-colors duration-150"
+            >
+              Map
+            </Link>
           </div>
         </div>
 
