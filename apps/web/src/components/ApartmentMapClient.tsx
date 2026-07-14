@@ -49,16 +49,16 @@ function listingIcon(focused: boolean) {
 function stationIcon() {
   return L.divIcon({
     html: `<div style="
-      width: 8px; height: 8px;
-      background: #5c6e52;
+      width: 20px; height: 20px;
+      background: ##e04686;
       border: 1.5px solid rgba(255,255,255,0.8);
       border-radius: 50%;
       opacity: 0.85;
     "></div>`,
     className: "",
-    iconSize: [8, 8],
-    iconAnchor: [4, 4],
-    tooltipAnchor: [4, 0],
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+    tooltipAnchor: [10, 0],
   });
 }
 
