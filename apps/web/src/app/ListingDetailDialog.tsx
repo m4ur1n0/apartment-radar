@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { Listing } from "./types";
+import { REVIEWERS } from "./types";
 import ListingRatingControls from "./ListingRatingControls";
 
 type Props = {
   listing: Listing;
   onClose: () => void;
+  onHidden?: (listingId: string) => void;
 };
 
 function scoreColor(s: number) {
@@ -127,7 +129,10 @@ function ImageCarousel({ urls }: { urls: string[] }) {
   );
 }
 
-export default function ListingDetailDialog({ listing: l, onClose }: Props) {
+export default function ListingDetailDialog({ listing: l, onClose, onHidden }: Props) {
+  const [deleteState, setDeleteState] = useState<"idle" | "confirm" | "loading" | "error">("idle");
+  const bothReviewed = REVIEWERS.every((r) => l.ratings?.some((x) => x.user_name === r));
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
@@ -135,6 +140,20 @@ export default function ListingDetailDialog({ listing: l, onClose }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  async function confirmHide() {
+    setDeleteState("loading");
+    try {
+      const res = await fetch(`/api/listings/${l.id}/hide`, { method: "POST" });
+      if (res.ok) {
+        onHidden?.(l.id);
+      } else {
+        setDeleteState("error");
+      }
+    } catch {
+      setDeleteState("error");
+    }
+  }
 
   return (
     <div
@@ -172,11 +191,16 @@ export default function ListingDetailDialog({ listing: l, onClose }: Props) {
         <div className="p-6">
           {/* header row */}
           <div className="flex items-start justify-between gap-4 mb-1">
-            <div>
+            <div className="flex items-center gap-3">
               <span className="text-2xl font-semibold text-stone-900">
                 ${l.rent.toLocaleString()}
                 <span className="text-stone-400 text-base font-normal">/mo</span>
               </span>
+              {bothReviewed && (
+                <span className="font-mono text-[9px] uppercase tracking-[0.07em] bg-stone-900 text-white px-1.5 py-0.5 self-center">
+                  Seen
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-stone-400 border border-stone-200 px-1.5 py-0.5">
@@ -315,8 +339,29 @@ export default function ListingDetailDialog({ listing: l, onClose }: Props) {
             </div>
           </div>
 
+          {/* reviews */}
+          <SectionRule label="reviews" />
+          <div className="flex flex-col gap-4 mb-2">
+            {REVIEWERS.map((reviewer) => {
+              const r = l.ratings?.find((x) => x.user_name === reviewer);
+              return (
+                <div key={reviewer}>
+                  <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-stone-400 block mb-1">{reviewer}</span>
+                  {r ? (
+                    <div className="flex items-start gap-3">
+                      <span className="font-mono text-sm font-semibold text-stone-900">{r.rating}/5</span>
+                      {r.notes && <span className="text-sm text-stone-600 leading-snug">{r.notes}</span>}
+                    </div>
+                  ) : (
+                    <span className="text-sm text-stone-400 italic">Not reviewed yet</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
           {/* rate */}
-          <SectionRule label="rate this listing" />
+          <SectionRule label="add / update rating" />
           <ListingRatingControls listingId={l.id} />
 
           {/* description */}
@@ -327,11 +372,46 @@ export default function ListingDetailDialog({ listing: l, onClose }: Props) {
             </>
           )}
 
-          {/* meta */}
-          <div className="mt-6 pt-4 border-t border-stone-100">
+          {/* delete */}
+          <div className="mt-6 pt-4 border-t border-stone-100 flex items-center justify-between gap-4">
             <p className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-300">
               first seen {new Date(l.first_seen_at).toLocaleDateString()} · last seen {new Date(l.last_seen_at).toLocaleDateString()}
             </p>
+            {deleteState === "idle" && (
+              <button
+                onClick={() => setDeleteState("confirm")}
+                className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-400 hover:text-red-400 transition-colors duration-150 shrink-0"
+              >
+                Delete
+              </button>
+            )}
+            {deleteState === "confirm" && (
+              <div className="flex flex-col items-end gap-2">
+                <p className="text-xs text-stone-500 text-right max-w-xs">
+                  Delete this apartment from Apt Radar? It will be hidden and should not reappear from crawler imports.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setDeleteState("idle")}
+                    className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmHide}
+                    className="font-mono text-[9px] uppercase tracking-[0.07em] text-red-500 hover:text-red-700 border border-red-300 px-2 py-1 transition-colors duration-150"
+                  >
+                    Yes, delete
+                  </button>
+                </div>
+              </div>
+            )}
+            {deleteState === "loading" && (
+              <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-400">Deleting…</span>
+            )}
+            {deleteState === "error" && (
+              <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-red-400">Failed to delete</span>
+            )}
           </div>
         </div>
       </div>

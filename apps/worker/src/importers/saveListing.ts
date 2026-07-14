@@ -188,6 +188,15 @@ export function calcScores(d: ListingFieldsForSave): ListingScores {
 export async function saveListing(db: D1Database, d: ListingFieldsForSave): Promise<SaveListingResult> {
   const enrichmentWarnings: string[] = [];
 
+  // don't resurrect a listing the user has hidden
+  const existing = await db
+    .prepare("SELECT id, hidden_at FROM listings WHERE canonical_url = ?")
+    .bind(d.canonical_url)
+    .first<{ id: string; hidden_at: string | null }>();
+  if (existing?.hidden_at) {
+    return { listingId: existing.id, enrichmentWarnings: ["listing_is_hidden"] };
+  }
+
   let resolvedLat = d.latitude ?? null;
   let resolvedLng = d.longitude ?? null;
   if ((resolvedLat == null || resolvedLng == null) && d.address_text) {

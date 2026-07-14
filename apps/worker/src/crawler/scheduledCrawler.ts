@@ -32,6 +32,8 @@ export type RunCrawlerResult = {
   ok: boolean;
   mode: "scheduled" | "manual";
   dryRun: boolean;
+  skipped?: boolean;
+  skipReason?: string;
   dueTargetsSelected: number;
   discoveryRunsCompleted: number;
   discoveryRunsFailed: number;
@@ -79,6 +81,32 @@ export async function runScheduledCrawler(
   const scraperApiKeys = options.scraperApiKeys ?? collectScraperKeys(env);
   const warnings: string[] = [];
   const db = env.DB;
+
+  // scheduled runs respect the crawler_enabled setting; manual runs always proceed
+  if (mode === "scheduled" && !dryRun) {
+    const setting = await db
+      .prepare("SELECT value FROM app_settings WHERE key = 'crawler_enabled'")
+      .first<{ value: string }>();
+    if (setting?.value === "false") {
+      return {
+        ok: true,
+        mode,
+        dryRun,
+        skipped: true,
+        skipReason: "crawler_paused",
+        dueTargetsSelected: 0,
+        discoveryRunsCompleted: 0,
+        discoveryRunsFailed: 0,
+        candidatesPersisted: 0,
+        importJobsInserted: 0,
+        importJobsProcessed: 0,
+        importJobsSucceeded: 0,
+        importJobsFailed: 0,
+        durationMs: Date.now() - start,
+        warnings: [],
+      };
+    }
+  }
 
   let dueTargetsSelected = 0;
   let discoveryRunsCompleted = 0;

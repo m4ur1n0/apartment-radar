@@ -242,8 +242,8 @@ describe("processImportJob", () => {
     }));
 
     const { db, runLog } = makeMockD1({
-      // first() calls: select id from listings (after upsert) → return a listing id
-      firstResponses: [{ id: "listing-uuid-001" }],
+      // first() calls: hidden_at check (null = not hidden), then select id from listings after upsert
+      firstResponses: [null, { id: "listing-uuid-001" }],
     });
 
     const result = await processImportJob(db, BASE_JOB, { scraperApiKeys: [] });

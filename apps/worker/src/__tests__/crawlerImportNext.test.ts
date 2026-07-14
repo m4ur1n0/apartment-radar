@@ -163,9 +163,9 @@ describe("POST /admin/crawler/import-next — dryRun: false", () => {
     const { db, runLog } = makeMockD1({
       // claim: allResponses[0] = the pending job for SELECT
       // after claim UPDATE, process runs:
-      //   first() call for "select id from listings where canonical_url = ?" → return a listing id
+      //   first() calls: hidden_at check (null = new/not hidden), then select id after upsert
       allResponses: [[PENDING_JOB_ROW]],
-      firstResponses: [{ id: "listing-uuid-001" }],
+      firstResponses: [null, { id: "listing-uuid-001" }],
     });
 
     const res = await callImportNext({ dryRun: false, limit: 1 }, db);

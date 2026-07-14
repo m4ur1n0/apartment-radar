@@ -1,3 +1,13 @@
+export const REVIEWERS = ["Theo", "Sam"] as const;
+export type Reviewer = (typeof REVIEWERS)[number];
+
+export type UserRating = {
+  user_name: string;
+  rating: number;
+  notes: string | null;
+  decision: string | null;
+};
+
 export type SubwayEstimate = {
   station_id: string;
   station_name: string;
@@ -50,4 +60,5 @@ export type Listing = {
   subway_estimates: SubwayEstimate[];
   amenities: string[];
   image_urls: string[];
+  ratings: UserRating[];
 };

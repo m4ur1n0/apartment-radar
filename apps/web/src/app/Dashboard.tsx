@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useMemo } from "react";
 import type { Listing } from "./types";
+import { REVIEWERS } from "./types";
 import ListingCard from "./ListingCard";
 import ListingDetailDialog from "./ListingDetailDialog";
 import ListingImportDialog from "./ListingImportDialog";
+import CrawlerStatus from "./CrawlerStatus";
 
 type LoadState = "loading" | "loaded" | "error";
 
@@ -24,6 +26,11 @@ const DEFAULT_FILTERS: Filters = {
   sort: "fit",
 };
 
+function ratingFor(listing: Listing, reviewer: string): number | null {
+  const r = listing.ratings?.find((x) => x.user_name === reviewer);
+  return r?.rating ?? null;
+}
+
 export default function Dashboard() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -31,6 +38,7 @@ export default function Dashboard() {
   const [importOpen, setImportOpen] = useState(false);
   const [detailListing, setDetailListing] = useState<Listing | null>(null);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [crawlerOpen, setCrawlerOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -38,6 +46,10 @@ export default function Dashboard() {
       try {
         const res = await fetch("/api/listings");
         if (!active) return;
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
         if (!res.ok) { setLoadState("error"); return; }
         const data = (await res.json()) as { listings: Listing[] };
         if (!active) return;
@@ -53,6 +65,11 @@ export default function Dashboard() {
   function triggerRefetch() {
     setLoadState("loading");
     setFetchKey((k) => k + 1);
+  }
+
+  function handleListingHidden(listingId: string) {
+    setListings((prev) => prev.filter((l) => l.id !== listingId));
+    setDetailListing(null);
   }
 
   const neighborhoods = useMemo(
@@ -92,6 +109,23 @@ export default function Dashboard() {
         case "rent_desc": return b.rent - a.rent;
         case "newest":    return new Date(b.first_seen_at).getTime() - new Date(a.first_seen_at).getTime();
         case "subway":    return (a.subway_walk_minutes ?? 99) - (b.subway_walk_minutes ?? 99);
+        case "theo": {
+          const ra = ratingFor(a, "Theo") ?? -1;
+          const rb = ratingFor(b, "Theo") ?? -1;
+          return rb - ra;
+        }
+        case "sam": {
+          const ra = ratingFor(a, "Sam") ?? -1;
+          const rb = ratingFor(b, "Sam") ?? -1;
+          return rb - ra;
+        }
+        case "avg": {
+          const avgRating = (l: Listing) => {
+            const vals = REVIEWERS.map((r) => ratingFor(l, r)).filter((v): v is number => v !== null);
+            return vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : -1;
+          };
+          return avgRating(b) - avgRating(a);
+        }
         default:          return b.fit_score - a.fit_score;
       }
     });
@@ -141,6 +175,12 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-3">
             <button
+              onClick={() => setCrawlerOpen((o) => !o)}
+              className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"
+            >
+              Crawler
+            </button>
+            <button
               onClick={triggerRefetch}
               className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"
             >
@@ -154,6 +194,8 @@ export default function Dashboard() {
             </button>
           </div>
         </div>
+
+        {crawlerOpen && <CrawlerStatus />}
       </header>
 
       {/* filter bar */}
@@ -211,6 +253,9 @@ export default function Dashboard() {
             <option value="rent_desc">Rent ↓</option>
             <option value="newest">Newest</option>
             <option value="subway">Shortest walk</option>
+            <option value="theo">Theo rating</option>
+            <option value="sam">Sam rating</option>
+            <option value="avg">Avg rating</option>
           </select>
 
           {hasActiveFilters && (
@@ -283,6 +328,7 @@ export default function Dashboard() {
         <ListingDetailDialog
           listing={detailListing}
           onClose={() => setDetailListing(null)}
+          onHidden={handleListingHidden}
         />
       )}
     </div>

@@ -99,12 +99,13 @@ describe("getNextDiscoveryAt", () => {
 // --- ensureTargetStateRows ---
 
 describe("ensureTargetStateRows", () => {
-  it("calls batch with insert or ignore for each target", async () => {
+  it("calls batch with upsert for each target and syncs enabled/priority on conflict", async () => {
     const { db, batchLog } = makeMockD1();
     await ensureTargetStateRows(db, [MOCK_TARGET, DISABLED_TARGET]);
     expect(batchLog).toHaveLength(1);
     expect(batchLog[0]).toHaveLength(2);
-    expect(batchLog[0][0]).toMatch(/insert or ignore into crawl_target_state/i);
+    expect(batchLog[0][0]).toMatch(/on conflict\(target_id\) do update set/i);
+    expect(batchLog[0][0]).toMatch(/enabled = excluded\.enabled/i);
   });
 
   it("does nothing when targets list is empty", async () => {
@@ -113,12 +114,11 @@ describe("ensureTargetStateRows", () => {
     expect(batchLog).toHaveLength(0);
   });
 
-  it("maps priority strings to integers", async () => {
-    const { db, runLog } = makeMockD1();
+  it("maps priority strings to integers via batch", async () => {
+    const { db, batchLog } = makeMockD1();
     await ensureTargetStateRows(db, [MOCK_TARGET]); // primary → 3
-    // runLog gets the batch entries
-    const insert = runLog.find((r) => r.sql.includes("insert or ignore"));
-    expect(insert).toBeDefined();
+    expect(batchLog).toHaveLength(1);
+    expect(batchLog[0]).toHaveLength(1);
   });
 });
 

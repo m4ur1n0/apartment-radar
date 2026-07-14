@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Listing } from "./types";
+import { REVIEWERS } from "./types";
 
 type Props = {
   listing: Listing;
@@ -63,6 +64,8 @@ function Thumb({ url, alt }: { url: string; alt?: string }) {
 }
 
 export default function ListingCard({ listing: l, onClick, animDelay = 0 }: Props) {
+  const bothReviewed = REVIEWERS.every((r) => l.ratings?.some((x) => x.user_name === r));
+
   return (
     <div
       className="bg-white border border-stone-200 cursor-pointer hover:border-stone-400 transition-colors duration-200 flex flex-col anim-fade-in-up"
@@ -146,11 +149,18 @@ export default function ListingCard({ listing: l, onClick, animDelay = 0 }: Prop
             </div>
           </div>
 
-          <div className={`border px-2 py-1 flex items-center gap-1.5 shrink-0 ${urgencyBorderColor(l.urgency_score)}`}>
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${urgencyDotColor(l.urgency_score)}`} />
-            <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-500">
-              {urgencyLabel(l.urgency_score)}
-            </span>
+          <div className="flex items-center gap-1.5">
+            {bothReviewed && (
+              <span className="font-mono text-[9px] uppercase tracking-[0.07em] bg-stone-900 text-white px-1.5 py-0.5">
+                Seen
+              </span>
+            )}
+            <div className={`border px-2 py-1 flex items-center gap-1.5 shrink-0 ${urgencyBorderColor(l.urgency_score)}`}>
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${urgencyDotColor(l.urgency_score)}`} />
+              <span className="font-mono text-[9px] uppercase tracking-[0.07em] text-stone-500">
+                {urgencyLabel(l.urgency_score)}
+              </span>
+            </div>
           </div>
         </div>
 

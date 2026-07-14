@@ -95,49 +95,58 @@ app.get("/health", (c) => c.json({ ok: true, service: "apt-radar-api" }));
 
 app.get("/listings", async (c) => {
   const status = c.req.query("status") ?? "active";
-  const limitRaw = parseInt(c.req.query("limit") ?? "50", 10);
-  const limit = Math.min(isNaN(limitRaw) ? 50 : limitRaw, 100);
+  const limitRaw = parseInt(c.req.query("limit") ?? "200", 10);
+  const limit = Math.min(isNaN(limitRaw) ? 200 : limitRaw, 200);
 
   const rows = await c.env.DB.prepare(
-    `select * from listings where status = ? order by urgency_score desc, fit_score desc, created_at desc limit ?`
+    `select * from listings where status = ? and hidden_at is null order by urgency_score desc, fit_score desc, created_at desc limit ?`
   )
     .bind(status, limit)
     .all();
 
   const listings = rows.results as Record<string, unknown>[];
-
   const listingIds = listings.map((l) => l.id as string);
 
   let estimatesByListing: Record<string, unknown[]> = {};
+  let photosByListing: Record<string, string[]> = {};
+  let ratingsByListing: Record<string, unknown[]> = {};
+
   if (listingIds.length > 0) {
     const placeholders = listingIds.map(() => "?").join(",");
-    const estimateRows = await c.env.DB.prepare(
-      `select * from listing_subway_estimates where listing_id in (${placeholders})
-       order by estimated_walk_minutes asc`
-    )
-      .bind(...listingIds)
-      .all();
 
-    for (const e of estimateRows.results) {
-      const row = e as Record<string, unknown>;
-      const lid = row.listing_id as string;
+    const [estimateRows, photoRows, ratingRows] = await Promise.all([
+      c.env.DB.prepare(
+        `select * from listing_subway_estimates where listing_id in (${placeholders}) order by estimated_walk_minutes asc`
+      ).bind(...listingIds).all(),
+      c.env.DB.prepare(
+        `select listing_id, source_url from listing_photos where listing_id in (${placeholders}) order by listing_id, coalesce(position, 999) asc`
+      ).bind(...listingIds).all(),
+      c.env.DB.prepare(
+        `select listing_id, user_name, rating, notes, decision from user_ratings where listing_id in (${placeholders}) order by listing_id, created_at desc`
+      ).bind(...listingIds).all(),
+    ]);
+
+    for (const e of estimateRows.results as Record<string, unknown>[]) {
+      const lid = e.listing_id as string;
       if (!estimatesByListing[lid]) estimatesByListing[lid] = [];
-      if (estimatesByListing[lid].length < 5) estimatesByListing[lid].push(row);
+      if (estimatesByListing[lid].length < 5) estimatesByListing[lid].push(e);
     }
-  }
 
-  const photosByListing: Record<string, string[]> = {};
-  if (listingIds.length > 0) {
-    const photoPlaceholders = listingIds.map(() => "?").join(",");
-    const photoRows = await c.env.DB.prepare(
-      `select listing_id, source_url from listing_photos
-       where listing_id in (${photoPlaceholders})
-       order by listing_id, coalesce(position, 999) asc`
-    ).bind(...listingIds).all();
     for (const row of photoRows.results as Record<string, unknown>[]) {
       const lid = row.listing_id as string;
       if (!photosByListing[lid]) photosByListing[lid] = [];
       if (photosByListing[lid].length < 10) photosByListing[lid].push(row.source_url as string);
+    }
+
+    // keep only the most recent rating per user per listing
+    const seenUserForListing = new Set<string>();
+    for (const row of ratingRows.results as Record<string, unknown>[]) {
+      const lid = row.listing_id as string;
+      const key = `${lid}:${row.user_name as string}`;
+      if (seenUserForListing.has(key)) continue;
+      seenUserForListing.add(key);
+      if (!ratingsByListing[lid]) ratingsByListing[lid] = [];
+      ratingsByListing[lid].push(row);
     }
   }
 
@@ -151,6 +160,7 @@ app.get("/listings", async (c) => {
       amenities,
       subway_estimates: estimatesByListing[l.id as string] ?? [],
       image_urls: photosByListing[l.id as string] ?? [],
+      ratings: ratingsByListing[l.id as string] ?? [],
     };
   });
 
@@ -425,6 +435,75 @@ app.post("/listings/:id/ratings", requireAdmin, async (c) => {
     .run();
 
   return c.json({ ok: true });
+});
+
+app.post("/listings/:id/hide", requireAdmin, async (c) => {
+  const listingId = c.req.param("id");
+
+  let body: { hidden_by?: string; hidden_reason?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch { /* body is optional */ }
+
+  const now = new Date().toISOString();
+  const result = await c.env.DB.prepare(
+    `update listings set hidden_at = ?, hidden_by = ?, hidden_reason = ?, updated_at = ? where id = ?`
+  )
+    .bind(now, body.hidden_by ?? null, body.hidden_reason ?? null, now, listingId)
+    .run();
+
+  if (!result.meta.changes) {
+    return c.json({ error: "listing_not_found" }, 404);
+  }
+
+  return c.json({ ok: true });
+});
+
+app.get("/admin/crawler/status", requireAdmin, async (c) => {
+  const [settingRow, jobRows, runRows] = await Promise.all([
+    c.env.DB.prepare("select value from app_settings where key = 'crawler_enabled'")
+      .first<{ value: string }>(),
+    c.env.DB.prepare(
+      "select source, status, count(*) as count from crawl_import_jobs group by source, status"
+    ).all<{ source: string; status: string; count: number }>(),
+    c.env.DB.prepare(
+      `select id, source, target_id, status, started_at, finished_at, candidates_found, candidates_accepted
+       from crawl_runs order by started_at desc limit 10`
+    ).all<Record<string, unknown>>(),
+  ]);
+
+  const crawlerEnabled = settingRow?.value !== "false";
+
+  const jobsByStatus: Record<string, number> = {};
+  for (const r of jobRows.results) {
+    jobsByStatus[r.status] = (jobsByStatus[r.status] ?? 0) + r.count;
+  }
+
+  return c.json({
+    crawlerEnabled,
+    pendingImportJobs: jobsByStatus["pending"] ?? 0,
+    failedImportJobs: jobsByStatus["failed"] ?? 0,
+    deadImportJobs: jobsByStatus["dead"] ?? 0,
+    recentRuns: runRows.results,
+  });
+});
+
+app.post("/admin/crawler/pause", requireAdmin, async (c) => {
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `insert into app_settings (key, value, updated_at) values ('crawler_enabled', 'false', ?)
+     on conflict(key) do update set value = 'false', updated_at = excluded.updated_at`
+  ).bind(now).run();
+  return c.json({ ok: true, crawlerEnabled: false });
+});
+
+app.post("/admin/crawler/resume", requireAdmin, async (c) => {
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `insert into app_settings (key, value, updated_at) values ('crawler_enabled', 'true', ?)
+     on conflict(key) do update set value = 'true', updated_at = excluded.updated_at`
+  ).bind(now).run();
+  return c.json({ ok: true, crawlerEnabled: true });
 });
 
 app.post("/admin/crawler/discover", requireAdmin, async (c) => {

@@ -73,9 +73,6 @@ const EXTENDED_NEIGHBORHOODS = [
 export const SEARCH_TARGETS: SearchTarget[] = [
   // ---------------------------------------------------------------------------
   // NOOKLYN
-  // These are the highest-value targets because Nooklyn now has a structured
-  // listing API once we discover listing URLs.
-  // Replace guessed urls with copied URLs after setting filters manually.
   // ---------------------------------------------------------------------------
 
   {
@@ -85,7 +82,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Nooklyn / listings search / Bushwick / 2BR / max $3100",
     searchUrl:
-      "https://nooklyn.com/rentals?neighborhood=bushwick&bedrooms=2&price=,3100",
+      "https://nooklyn.com/rentals?neighborhood=bushwick&bedrooms=2&price=1900,3100",
     urlNeedsVerification: true,
     verificationNotes:
       "Open Nooklyn, search Bushwick rentals, set 2 bedrooms and max $3100, then replace this URL with the copied filtered URL.",
@@ -107,10 +104,10 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     id: "nooklyn-url-first-ridgewood-2br-max3100",
     source: "nooklyn",
     priority: "primary",
-    enabled: true,
+    enabled: false, // city-wide API fetch returns 0 nooklyn listings for this neighborhood
     label: "Nooklyn / listings search / Ridgewood / 2BR / max $3100",
     searchUrl:
-      "https://nooklyn.com/rentals?neighborhood=ridgewood&bedrooms=2&price=,3100",
+      "https://nooklyn.com/rentals?neighborhood=ridgewood&bedrooms=2&price=1900,3100",
     urlNeedsVerification: true,
     verificationNotes:
       "Open Nooklyn, search Ridgewood rentals, set 2 bedrooms and max $3100, then replace this URL with the copied filtered URL.",
@@ -131,10 +128,10 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     id: "nooklyn-url-first-east-williamsburg-2br-max3100",
     source: "nooklyn",
     priority: "secondary",
-    enabled: true,
+    enabled: false, // city-wide API fetch returns 0 nooklyn listings for this neighborhood
     label: "Nooklyn / listings search / East Williamsburg / 2BR / max $3100",
     searchUrl:
-      "https://nooklyn.com/rentals?neighborhood=east-williamsburg&bedrooms=2&price=,3100",
+      "https://nooklyn.com/rentals?neighborhood=east-williamsburg&bedrooms=2&price=1900,3100",
     urlNeedsVerification: true,
     expectedFilters: {
       maxRent: 3100,
@@ -156,7 +153,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Nooklyn / listings search / Bed-Stuy / 2BR / max $3100",
     searchUrl:
-      "https://nooklyn.com/rentals?neighborhood=bed-stuy&bedrooms=2&price=,3100",
+      "https://nooklyn.com/rentals?neighborhood=bed-stuy&bedrooms=2&price=1900,3100",
     urlNeedsVerification: true,
     expectedFilters: {
       maxRent: 3100,
@@ -175,10 +172,10 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     id: "nooklyn-url-first-maspeth-2br-max3100",
     source: "nooklyn",
     priority: "secondary",
-    enabled: true,
+    enabled: false, // city-wide API fetch returns 0 nooklyn listings for this neighborhood
     label: "Nooklyn / listings search / Maspeth / 2BR / max $3100",
     searchUrl:
-      "https://nooklyn.com/rentals?neighborhood=maspeth&bedrooms=2&price=,3100",
+      "https://nooklyn.com/rentals?neighborhood=maspeth&bedrooms=2&price=1900,3100",
     urlNeedsVerification: true,
     expectedFilters: {
       maxRent: 3100,
@@ -200,7 +197,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: false,
     label: "Nooklyn / listings search / Cypress Hills / 2BR / max $3100",
     searchUrl:
-      "https://nooklyn.com/rentals?neighborhood=cypress-hills&bedrooms=2&price=,3100",
+      "https://nooklyn.com/rentals?neighborhood=cypress-hills&bedrooms=2&price=1900,3100",
     urlNeedsVerification: true,
     expectedFilters: {
       maxRent: 3100,
@@ -218,19 +215,17 @@ export const SEARCH_TARGETS: SearchTarget[] = [
 
   // ---------------------------------------------------------------------------
   // CRAIGSLIST
-  // Craigslist URL params are the most predictable. These should be close.
-  // brk = Brooklyn, que = Queens, apa = apartments/housing for rent.
   // ---------------------------------------------------------------------------
 
   {
     id: "craigslist-url-first-brooklyn-apa-2br-max3100-query-bushwick-ridgewood",
     source: "craigslist",
     priority: "primary",
-    enabled: true,
+    enabled: false, // OR query is not honored by craigslist; separate targets work better
     label:
       "Craigslist / brk apa / query Bushwick OR Ridgewood-ish / 2BR / max $3100",
     searchUrl:
-      "https://newyork.craigslist.org/search/brk/apa?max_bedrooms=2&max_price=3100&min_bedrooms=2&query=bushwick%20OR%20ridgewood#search=2",
+      "https://newyork.craigslist.org/search/brk/apa?max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900&query=bushwick%20OR%20ridgewood#search=2",
     urlNeedsVerification: true,
     verificationNotes:
       "Craigslist query OR behavior may not work as expected. Replace with separate query URLs if needed.",
@@ -254,7 +249,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Craigslist / brk apa / query Bushwick / 2BR / max $3100",
     searchUrl:
-      "https://newyork.craigslist.org/search/brk/apa?max_bedrooms=2&max_price=3100&min_bedrooms=2&query=bushwick#search=2~list~0",
+      "https://newyork.craigslist.org/search/brk/apa?max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900&query=bushwick#search=2~list~0",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -278,7 +273,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Craigslist / que apa / query Ridgewood / 2BR / max $3100",
     searchUrl:
-      "https://www.craigslist.org/search/subarea/que?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&query=ridgewood",
+      "https://www.craigslist.org/search/subarea/que?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900&query=ridgewood",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -300,7 +295,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Craigslist / brk apa / query Bed-Stuy / 2BR / max $3100",
     searchUrl:
-      "https://www.craigslist.org/search/subarea/brk?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&query=bed%20stuy",
+      "https://www.craigslist.org/search/subarea/brk?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900&query=bed%20stuy",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -322,7 +317,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Craigslist / brk apa / query East Williamsburg / 2BR / max $3100",
     searchUrl:
-      "https://www.craigslist.org/search/subarea/brk?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&query=east%20williamsburg",
+      "https://www.craigslist.org/search/subarea/brk?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900&query=east%20williamsburg",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -344,7 +339,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: true,
     label: "Craigslist / que apa / query Maspeth / 2BR / max $3100",
     searchUrl:
-      "https://www.craigslist.org/search/subarea/que?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&query=maspeth",
+      "https://www.craigslist.org/search/subarea/que?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900&query=maspeth",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -366,7 +361,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: false,
     label: "Craigslist / brk apa / broad Brooklyn / 2BR / max $3100",
     searchUrl:
-      "https://www.craigslist.org/search/subarea/brk?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2",
+      "https://www.craigslist.org/search/subarea/brk?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -393,7 +388,7 @@ export const SEARCH_TARGETS: SearchTarget[] = [
     enabled: false,
     label: "Craigslist / que apa / broad Queens / 2BR / max $3100",
     searchUrl:
-      "https://www.craigslist.org/search/subarea/que?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2",
+      "https://www.craigslist.org/search/subarea/que?cat=apa&max_bedrooms=2&max_price=3100&min_bedrooms=2&min_price=1900",
     urlNeedsVerification: false,
     expectedFilters: {
       maxRent: 3100,
@@ -415,8 +410,6 @@ export const SEARCH_TARGETS: SearchTarget[] = [
 
   // ---------------------------------------------------------------------------
   // STREETEASY
-  // StreetEasy URL shapes are likely close but should be manually verified.
-  // Best approach: open StreetEasy, apply filters, copy final URL into these.
   // ---------------------------------------------------------------------------
 
   {
@@ -627,9 +620,6 @@ export const SEARCH_TARGETS: SearchTarget[] = [
 
   // ---------------------------------------------------------------------------
   // ZILLOW
-  // Zillow search URLs are the least reliable as hand-written strings because
-  // useful filters are often encoded in searchQueryState. These are placeholders.
-  // Best method: use the site UI, set filters, copy URL into these targets.
   // ---------------------------------------------------------------------------
 
   {

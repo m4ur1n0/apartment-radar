@@ -37,9 +37,13 @@ export async function ensureTargetStateRows(
   const stmts = targets.map((t) =>
     db
       .prepare(
-        `insert or ignore into crawl_target_state
+        `insert into crawl_target_state
            (target_id, source, enabled, priority, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?)`
+         values (?, ?, ?, ?, ?, ?)
+         on conflict(target_id) do update set
+           enabled = excluded.enabled,
+           priority = excluded.priority,
+           updated_at = excluded.updated_at`
       )
       .bind(
         t.id,
@@ -49,6 +53,20 @@ export async function ensureTargetStateRows(
         now,
         now
       )
+  );
+  await db.batch(stmts);
+}
+
+export async function disableCrawlerTargets(
+  db: D1Database,
+  targetIds: string[]
+): Promise<void> {
+  if (targetIds.length === 0) return;
+  const now = new Date().toISOString();
+  const stmts = targetIds.map((id) =>
+    db
+      .prepare(`update crawl_target_state set enabled = 0, updated_at = ? where target_id = ?`)
+      .bind(now, id)
   );
   await db.batch(stmts);
 }
