@@ -93,6 +93,18 @@ type ListingInput = z.infer<typeof ManualListingSchema>;
 
 app.get("/health", (c) => c.json({ ok: true, service: "apt-radar-api" }));
 
+app.get("/subway-stations", (c) => {
+  const stations = SUBWAY_STATIONS.map((s) => ({
+    id: s.id,
+    name: s.name,
+    latitude: s.latitude,
+    longitude: s.longitude,
+    lines: s.lines,
+    borough: s.borough,
+  }));
+  return c.json({ stations });
+});
+
 app.get("/listings", async (c) => {
   const status = c.req.query("status") ?? "active";
   const limitRaw = parseInt(c.req.query("limit") ?? "200", 10);
@@ -112,18 +124,18 @@ app.get("/listings", async (c) => {
   let ratingsByListing: Record<string, unknown[]> = {};
 
   if (listingIds.length > 0) {
-    const placeholders = listingIds.map(() => "?").join(",");
+    const subquery = `select id from listings where status = ? and hidden_at is null order by urgency_score desc, fit_score desc, created_at desc limit ?`;
 
     const [estimateRows, photoRows, ratingRows] = await Promise.all([
       c.env.DB.prepare(
-        `select * from listing_subway_estimates where listing_id in (${placeholders}) order by estimated_walk_minutes asc`
-      ).bind(...listingIds).all(),
+        `select * from listing_subway_estimates where listing_id in (${subquery}) order by estimated_walk_minutes asc`
+      ).bind(status, limit).all(),
       c.env.DB.prepare(
-        `select listing_id, source_url from listing_photos where listing_id in (${placeholders}) order by listing_id, coalesce(position, 999) asc`
-      ).bind(...listingIds).all(),
+        `select listing_id, source_url from listing_photos where listing_id in (${subquery}) order by listing_id, coalesce(position, 999) asc`
+      ).bind(status, limit).all(),
       c.env.DB.prepare(
-        `select listing_id, user_name, rating, notes, decision from user_ratings where listing_id in (${placeholders}) order by listing_id, created_at desc`
-      ).bind(...listingIds).all(),
+        `select listing_id, user_name, rating, notes, decision from user_ratings where listing_id in (${subquery}) order by listing_id, created_at desc`
+      ).bind(status, limit).all(),
     ]);
 
     for (const e of estimateRows.results as Record<string, unknown>[]) {

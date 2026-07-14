@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
 :root {
   --background: #f0f0f0;
@@ -47,4 +48,21 @@ body {
 
 .anim-breathe {
   animation: breathe 3s ease-in-out infinite;
+}
+
+/* leaflet tooltip override */
+.apt-map-tooltip {
+  background: #1c1917;
+  border: none;
+  border-radius: 0;
+  color: #e7e5e4;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 4px 7px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  white-space: nowrap;
+}
+.apt-map-tooltip::before {
+  border-top-color: #1c1917 !important;
 }

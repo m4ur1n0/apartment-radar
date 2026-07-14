@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback } from "react";
 import type { Listing } from "./types";
 import { REVIEWERS } from "./types";
 import ListingRatingControls from "./ListingRatingControls";
+import ApartmentMap from "../components/ApartmentMap";
+import type { SubwayStationPoint } from "../components/ApartmentMap";
+import { haversineDistanceMiles } from "../lib/geo";
 
 type Props = {
   listing: Listing;
@@ -129,9 +132,30 @@ function ImageCarousel({ urls }: { urls: string[] }) {
   );
 }
 
+const NEARBY_MILES = 0.75;
+
 export default function ListingDetailDialog({ listing: l, onClose, onHidden }: Props) {
   const [deleteState, setDeleteState] = useState<"idle" | "confirm" | "loading" | "error">("idle");
+  const [nearbyStations, setNearbyStations] = useState<SubwayStationPoint[]>([]);
   const bothReviewed = REVIEWERS.every((r) => l.ratings?.some((x) => x.user_name === r));
+
+  useEffect(() => {
+    if (!l.latitude || !l.longitude) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/subway-stations");
+        if (!res.ok) return;
+        const data = await res.json() as { stations: SubwayStationPoint[] };
+        const lat = l.latitude!;
+        const lng = l.longitude!;
+        setNearbyStations(
+          data.stations.filter(
+            (s) => haversineDistanceMiles(lat, lng, s.latitude, s.longitude) <= NEARBY_MILES
+          )
+        );
+      } catch { /* map section just stays empty */ }
+    })();
+  }, [l.latitude, l.longitude]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -370,6 +394,29 @@ export default function ListingDetailDialog({ listing: l, onClose, onHidden }: P
               <SectionRule label="description" />
               <p className="text-sm text-stone-600 leading-relaxed">{l.description}</p>
             </>
+          )}
+
+          {/* map */}
+          <SectionRule label="nearby map" />
+          {l.latitude && l.longitude ? (
+            <div style={{ height: 220 }} className="w-full overflow-hidden border border-stone-200">
+              <ApartmentMap
+                listings={[{
+                  id: l.id,
+                  title: l.title ?? undefined,
+                  address: l.address_text ?? undefined,
+                  price: l.rent,
+                  latitude: l.latitude,
+                  longitude: l.longitude,
+                  neighborhood: l.neighborhood ?? undefined,
+                }]}
+                subwayStations={nearbyStations}
+                mode="listing-detail"
+                className="w-full h-full"
+              />
+            </div>
+          ) : (
+            <p className="text-sm text-stone-400 italic">Map unavailable for this listing.</p>
           )}
 
           {/* delete */}

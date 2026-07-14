@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import Link from "next/link";
 import type { Listing } from "./types";
 import { REVIEWERS } from "./types";
 import ListingCard from "./ListingCard";
@@ -180,6 +181,12 @@ export default function Dashboard() {
             >
               Crawler
             </button>
+            <Link
+              href="/map"
+              className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"
+            >
+              Map
+            </Link>
             <button
               onClick={triggerRefetch}
               className="font-mono text-[10px] uppercase tracking-[0.07em] text-stone-400 hover:text-stone-700 transition-colors duration-150"

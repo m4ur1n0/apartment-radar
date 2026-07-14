@@ -50,3 +50,6 @@ next-env.d.ts
 !README.md
 
 *claude*
+
+portfolio-pics
+portfolio-pics/*
