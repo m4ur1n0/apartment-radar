@@ -49,6 +49,7 @@ export function normalizeImageUrl(url: string, baseUrl: string): string | undefi
 export function isClearlyBadImage(url: string): { bad: boolean; reason?: string } {
   if (url.startsWith("data:")) return { bad: true, reason: "data_url" };
   if (url.startsWith("blob:")) return { bad: true, reason: "blob_url" };
+  if (url.includes("Illustration_finance")) return  {bad : true, reason: "data_url"}; // don't know if there are limited reason options, this is 'data' because its nonsense image from zillow
 
   let parsed: URL;
   try {

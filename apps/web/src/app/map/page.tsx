@@ -102,7 +102,7 @@ export default function MapPage() {
       </header>
 
       {/* map area */}
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 relative overflow-hidden z-40">
         {loadState === "loading" && (
           <div className="absolute inset-0 flex items-center justify-center gap-2.5">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-300 anim-breathe" />

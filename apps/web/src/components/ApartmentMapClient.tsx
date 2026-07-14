@@ -50,7 +50,7 @@ function stationIcon() {
   return L.divIcon({
     html: `<div style="
       width: 20px; height: 20px;
-      background: ##e04686;
+      background: #e04686;
       border: 1.5px solid rgba(255,255,255,0.8);
       border-radius: 50%;
       opacity: 0.85;
