@@ -17,7 +17,7 @@ export function detectSource(hostname: string): ImportSource {
 
 const SHARED_HARD_FILTERS = {
   minPriceDollars: 500,
-  maxPriceDollars: 3100,
+  maxPriceDollars: 3600,
   minBeds: 2,
   minBaths: 1,
   allowedBoroughs: ["brooklyn", "queens"],

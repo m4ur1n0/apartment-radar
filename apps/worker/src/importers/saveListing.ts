@@ -48,7 +48,7 @@ function clamp(v: number): number {
 }
 
 function calcDealScore(d: ListingFieldsForSave): number {
-  if (d.rent > 3000) return 0;
+  if (d.rent > 3600) return 0;
   let s = 50;
   if (d.rent <= 2600) s += 25;
   else if (d.rent <= 2800) s += 15;
