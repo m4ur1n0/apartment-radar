@@ -320,22 +320,34 @@ export default function ApartmentMapClient({
   }, [onDrawComplete]);
 
   return (
-    <div className={`${className} relative`} style={{ background: "#e8e0d8" }}>
-      <div ref={mapContainerRef} className="absolute inset-0" />
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full"
-        style={{
-          display: drawMode ? "block" : "none",
-          zIndex: 500,
-          cursor: "crosshair",
-          pointerEvents: "auto",
-          touchAction: "none",
-        }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-      />
+    <div className={className} style={{ background: "#e8e0d8" }}>
+      {/* Inner div is always position:relative so it serves as the canvas's containing block
+          without conflicting with whatever position className provides externally */}
+      <div
+        ref={mapContainerRef}
+        style={{ position: "relative", width: "100%", height: "100%" }}
+      >
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            width: "100%",
+            height: "100%",
+            display: drawMode ? "block" : "none",
+            zIndex: 500,
+            cursor: "crosshair",
+            pointerEvents: "auto",
+            touchAction: "none",
+          }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        />
+      </div>
     </div>
   );
 }
