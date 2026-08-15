@@ -1,5 +1,5 @@
 import dynamic from "next/dynamic";
-export type { ApartmentMapProps, ListingMapPoint, SubwayStationPoint } from "./ApartmentMapClient";
+export type { ApartmentMapProps, ListingMapPoint, SubwayStationPoint, DrawnPolygon } from "./ApartmentMapClient";
 
 const ApartmentMap = dynamic(() => import("./ApartmentMapClient"), {
   ssr: false,
